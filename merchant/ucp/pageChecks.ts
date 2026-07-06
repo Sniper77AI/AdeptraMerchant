@@ -78,7 +78,7 @@ export interface SampledComparison {
 // JSON-LD extraction (pure)
 // ---------------------------------------------------------------------------
 
-function jsonLdBlocks(html: string): any[] {
+export function jsonLdBlocks(html: string): any[] {
   const blocks: any[] = [];
   const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let m: RegExpExecArray | null;
@@ -92,7 +92,7 @@ function jsonLdBlocks(html: string): any[] {
   return blocks;
 }
 
-function typesOf(node: any): string[] {
+export function typesOf(node: any): string[] {
   const t = node?.["@type"];
   if (!t) return [];
   return Array.isArray(t) ? t : [t];
@@ -110,7 +110,7 @@ function toPageVariant(p: any): PageVariant {
   };
 }
 
-function flattenNodes(blocks: any[]): any[] {
+export function flattenNodes(blocks: any[]): any[] {
   const nodes: any[] = [];
   for (const block of blocks) {
     if (Array.isArray(block?.["@graph"])) nodes.push(...block["@graph"]);

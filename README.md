@@ -36,6 +36,10 @@ merchant/
                            # first (skips the LLM call when feed/page text is already identical);
                            # injectable LlmClient (openAiClient is the real impl); degrades to
                            # not_applicable when OPENAI_API_KEY isn't set
+    policyChecks.ts        # Category 5 (Policy & Post-Purchase Transparency): return_policy_present_consistent
+                           # / shipping_info_present_consistent (best-effort probe of known Shopify +
+                           # custom-storefront path conventions — no general crawler yet) /
+                           # support_contact_present (schema.org Organization.contactPoint)
     httpFetcher.ts         # Production Fetcher: native fetch, shared 5s deadline, manual
                            # redirect tracking (chain in evidence), 401/403 → requiresAuth
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
@@ -43,9 +47,9 @@ merchant/
                            # signal insert (run_id stamped; priority_score is DB-generated),
                            # pillar score insert, site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
-                           # cross-check + LLM checks → signals → score → Postgres
+                           # cross-check + LLM checks + policy/contact probes → signals → score → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
-    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM signal
+    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy signal
                            # logic (mock LlmClient), known-shortcut fixes, httpFetcher (stubbed fetch)
 ```
 
@@ -117,9 +121,15 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
       OpenAI-backed semantic/enrichment checks; tested, live-verified — matched real
       SKUs/prices/availability across 15 live product pages, and got sensible real LLM verdicts
       on 5 real products with no false contradictions)
+- [x] Category 5 — Policy & Post-Purchase Transparency, all 3 signals: `return_policy_present_consistent`,
+      `shipping_info_present_consistent`, `support_contact_present` (best-effort known-path probing +
+      schema.org Organization.contactPoint; tested, live-verified — found real policy pages at
+      different URLs per store, correctly failed shipping-info absence on gymshark.com, correctly
+      flagged its Organization schema as present-but-unstructured contact info)
 - [x] Real HTTP fetcher + Supabase insert (unit-tested, live-verified against skims.com, gymshark.com)
 - [x] Scorer → `pillar_scores` (unit-tested, live-verified)
 - [x] First live end-to-end runs against real stores (skims.com, gymshark.com)
+- [ ] Category 4 (Payment/AP2 Readiness) & Category 6 (Merchant Center Eligibility readiness gate)
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
 
@@ -141,3 +151,17 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
   86.84% → 91.67% with the flag set, back to 86.84% on revert). **Remaining
   gap:** there's no onboarding UI yet for a merchant/operator to set this flag
   themselves — today it's a plain DB column, toggled only via SQL.
+
+- **Category 5's policy-page discovery is a best-effort path probe, not a
+  crawler.** `return_policy_present_consistent` / `shipping_info_present_consistent`
+  try a short list of known URL conventions (Shopify's auto-generated
+  `/policies/*`, plus common `/pages/*` custom-storefront slugs) rather than
+  discovering arbitrary policy URLs. Grounded against real stores: skims.com
+  and gymshark.com both 404 on Shopify's own `/policies/*` convention from
+  their main domain (it only resolves on the `*.myshopify.com` backend or a
+  checkout subdomain) and instead use their own `/pages/*` slugs — and those
+  slugs differ between stores. A store using an unlisted convention will
+  score `fail` even if the policy page exists. Also, "consistent with feed/
+  Merchant Center" (the spec's pass condition) isn't checked at all — there's
+  no reliable feed-side policy data to compare against yet — so
+  `evidence_json.feed_match` is always `null`, not a fabricated `true`.

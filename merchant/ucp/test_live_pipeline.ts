@@ -42,6 +42,15 @@ import {
   type TitleDescSample,
   type EnrichmentSample,
 } from "./llmChecks.ts";
+import {
+  runPolicyChecks,
+  probeCandidatePaths,
+  sig_return_policy_present,
+  sig_shipping_info_present,
+  sig_support_contact_present,
+  type PagePresenceProbe,
+  type HomepageState,
+} from "./policyChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -706,7 +715,96 @@ function mockLlm(responses: string[]): { client: LlmClient; calls: string[] } {
 }
 
 // ---------------------------------------------------------------------------
-// 7. httpFetcher (stubbed globalThis.fetch)
+// 7. policyChecks (Category 5: return policy / shipping info / support contact)
+// ---------------------------------------------------------------------------
+
+function mockPathFetcher(okPaths: string[], body = ""): Fetcher {
+  return async (url: string) => {
+    const found = okPaths.some((p) => url.endsWith(p));
+    return { status: found ? 200 : 404, headers: {}, body: found ? body : "", redirectChain: [], requiresAuth: false };
+  };
+}
+
+{
+  const probe = await probeCandidatePaths("https://shop.example.com", ["/policies/refund-policy", "/pages/returns"], mockPathFetcher(["/pages/returns"]));
+  check("probeCandidatePaths: skips 404s, finds the first candidate that 200s", probe.foundUrl === "https://shop.example.com/pages/returns", probe);
+  check("probeCandidatePaths: records every URL it tried", probe.checkedUrls.length === 2, probe);
+}
+
+{
+  const probe = await probeCandidatePaths("https://shop.example.com", ["/policies/refund-policy", "/pages/returns"], mockPathFetcher([]));
+  check("probeCandidatePaths: foundUrl null when every candidate 404s", probe.foundUrl === null, probe);
+}
+
+{
+  const notFound: PagePresenceProbe = { checkedUrls: ["https://shop.example.com/policies/refund-policy"], foundUrl: null, hasStructuredData: false };
+  check("return_policy: fail when not found", sig_return_policy_present(notFound).status === "fail", sig_return_policy_present(notFound));
+  check("return_policy: feed_match explicitly null (not checked)", (sig_return_policy_present(notFound).evidence_json as any).feed_match === null);
+}
+
+{
+  const foundNoStructure: PagePresenceProbe = { checkedUrls: ["https://shop.example.com/pages/returns"], foundUrl: "https://shop.example.com/pages/returns", hasStructuredData: false };
+  check("return_policy: partial when found but no structured data", sig_return_policy_present(foundNoStructure).status === "partial");
+}
+
+{
+  const foundStructured: PagePresenceProbe = { checkedUrls: ["https://shop.example.com/policies/refund-policy"], foundUrl: "https://shop.example.com/policies/refund-policy", hasStructuredData: true };
+  check("return_policy: pass when found and structured", sig_return_policy_present(foundStructured).status === "pass");
+  check("shipping_info: pass when found and structured", sig_shipping_info_present(foundStructured).status === "pass");
+}
+
+{
+  const orgJsonLd = JSON.stringify({ "@type": "Organization", name: "Shop", contactPoint: { "@type": "ContactPoint", telephone: "+1-555-0100", contactType: "customer support" } });
+  const homepage: HomepageState = { reachable: true, httpStatus: 200, blocks: [JSON.parse(orgJsonLd)] };
+  const signal = sig_support_contact_present(homepage);
+  check("support_contact_present: pass on Organization.contactPoint with a telephone", signal.status === "pass", signal);
+  check("support_contact_present: method recorded in evidence", (signal.evidence_json as any).method === "schema.org Organization.contactPoint", signal);
+}
+
+{
+  const orgNoContact = JSON.stringify({ "@type": "Organization", name: "Shop" });
+  const homepage: HomepageState = { reachable: true, httpStatus: 200, blocks: [JSON.parse(orgNoContact)] };
+  const signal = sig_support_contact_present(homepage);
+  check("support_contact_present: partial when Organization present but no usable contactPoint", signal.status === "partial", signal);
+}
+
+{
+  const homepage: HomepageState = { reachable: true, httpStatus: 200, blocks: [] };
+  const signal = sig_support_contact_present(homepage);
+  check("support_contact_present: fail when no Organization node at all", signal.status === "fail", signal);
+}
+
+{
+  // End-to-end orchestrator: real-shaped fetcher serving different candidates per signal.
+  const fetcher: Fetcher = async (url: string) => {
+    if (url.endsWith("/pages/returns")) return { status: 200, headers: {}, body: "", redirectChain: [], requiresAuth: false };
+    if (url.endsWith("/policies/shipping-policy")) {
+      return {
+        status: 200,
+        headers: {},
+        body: `<script type="application/ld+json">${JSON.stringify({ "@type": "WebPage" })}</script>`,
+        redirectChain: [],
+        requiresAuth: false,
+      };
+    }
+    if (url === "https://shop.example.com") {
+      const org = { "@type": "Organization", contactPoint: { email: "support@shop.example.com" } };
+      return { status: 200, headers: {}, body: `<script type="application/ld+json">${JSON.stringify(org)}</script>`, redirectChain: [], requiresAuth: false };
+    }
+    return { status: 404, headers: {}, body: "", redirectChain: [], requiresAuth: false };
+  };
+  const signals = await runPolicyChecks("https://shop.example.com", fetcher);
+  check("runPolicyChecks: returns all three signals", signals.length === 3, signals);
+  const returnPolicy = signals.find((s) => s.signal_key === "return_policy_present_consistent")!;
+  const shippingInfo = signals.find((s) => s.signal_key === "shipping_info_present_consistent")!;
+  const supportContact = signals.find((s) => s.signal_key === "support_contact_present")!;
+  check("runPolicyChecks: return policy found but unstructured -> partial", returnPolicy.status === "partial", returnPolicy);
+  check("runPolicyChecks: shipping info found and structured -> pass", shippingInfo.status === "pass", shippingInfo);
+  check("runPolicyChecks: support contact found via homepage Organization -> pass", supportContact.status === "pass", supportContact);
+}
+
+// ---------------------------------------------------------------------------
+// 8. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {

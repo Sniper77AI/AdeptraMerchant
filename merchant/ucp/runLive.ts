@@ -2,8 +2,9 @@
  * Adeptra Merchant — Live end-to-end run.
  *
  * domain in → real /.well-known/ucp fetch (Category 1 + 3) + product feed
- * fetch + page cross-check + LLM checks (Category 2, if configured) → scorer
- * → rows in analysis_runs / signals / pillar_scores.
+ * fetch + page cross-check + LLM checks (Category 2, if configured) + policy/
+ * contact page probes (Category 5) → scorer → rows in analysis_runs /
+ * signals / pillar_scores.
  *
  * Usage:
  *   SUPABASE_URL=https://<ref>.supabase.co \
@@ -23,6 +24,7 @@ import { runCapabilityChecks } from "./capabilityChecks.ts";
 import { runFeedChecks, extractFeedVariants } from "./feedChecks.ts";
 import { runPageConsistencyChecks } from "./pageChecks.ts";
 import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
+import { runPolicyChecks } from "./policyChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -87,7 +89,8 @@ try {
   } else if (feed && feed.items.length > 0) {
     console.log(`llm:   sampled up to 5 of ${feed.items.length} feed products for title/description + attribute-richness checks`);
   }
-  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals, ...llmSignals];
+  const policySignals = await runPolicyChecks(site.rootUrl ?? `https://${domain}`, httpFetcher);
+  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals, ...llmSignals, ...policySignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);
