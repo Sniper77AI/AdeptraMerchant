@@ -1,8 +1,9 @@
 /**
  * Adeptra Merchant — Live end-to-end run.
  *
- * domain in → real /.well-known/ucp fetch → Category-1 signals → scorer →
- * rows in analysis_runs / signals / pillar_scores.
+ * domain in → real /.well-known/ucp fetch (Category 1 + 3) + product feed
+ * fetch (Category 2, if configured) → scorer → rows in analysis_runs /
+ * signals / pillar_scores.
  *
  * Usage:
  *   SUPABASE_URL=https://<ref>.supabase.co \
@@ -18,6 +19,7 @@
 
 import { runManifestChecks, isManifestMissing } from "./manifestChecks.ts";
 import { runCapabilityChecks } from "./capabilityChecks.ts";
+import { runFeedChecks } from "./feedChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -62,7 +64,11 @@ try {
   const capabilitySignals = await runCapabilityChecks(manifest, httpFetcher, {
     identityLinkingOptOut: site.identityLinkingOptOut,
   });
-  const signals = [...manifestSignals, ...capabilitySignals];
+  const { feed, signals: feedSignals } = await runFeedChecks(site.feedUrl, httpFetcher, site.rootUrl ?? undefined);
+  if (feed) {
+    console.log(`feed:  ${feed.url} → ${feed.httpStatus ?? "unreachable"} (${feed.format}, ${feed.items.length} items)${feed.errorNote ? ` (${feed.errorNote})` : ""}`);
+  }
+  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);

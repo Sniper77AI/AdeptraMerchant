@@ -1,5 +1,6 @@
 import { runManifestChecks, type Fetcher, type FetchResult } from "./manifestChecks.ts";
 import { runCapabilityChecks } from "./capabilityChecks.ts";
+import { runFeedChecks } from "./feedChecks.ts";
 
 // --- Three mock manifests ---------------------------------------------------
 
@@ -120,6 +121,41 @@ const capScenarios: Record<string, { manifestFetcher: Fetcher; endpointFetcher: 
 for (const [name, { manifestFetcher, endpointFetcher }] of Object.entries(capScenarios)) {
   const { manifest } = await runManifestChecks("shop.example.com", manifestFetcher);
   const signals = await runCapabilityChecks(manifest, endpointFetcher);
+
+  console.log(`\n=== ${name} ===`);
+  for (const r of signals) {
+    const prio = ((r.impact * r.weight) / Math.max(r.effort, 1)).toFixed(2);
+    console.log(`  ${bar(r.status)}  ${r.signal_key.padEnd(32)} w=${r.weight} prio=${prio}  ${r.fix_summary ?? ""}`);
+  }
+}
+console.log("");
+
+// --- Category 2: Product Data Hygiene (feed_available + native_commerce_attribute) --
+
+const GOOD_FEED = JSON.stringify({
+  products: [
+    { id: 1, handle: "widget", title: "Widget", variants: [{ sku: "W-1", price: "19.99", available: true }], native_commerce: true },
+    { id: 2, handle: "gadget", title: "Gadget", variants: [{ sku: "G-1", price: "29.99", available: true }] },
+  ],
+});
+
+const feedScenarios: Record<string, { feedUrl: string | null; fetcher: Fetcher }> = {
+  "G. feed reachable, one product missing native_commerce": {
+    feedUrl: "https://shop.example.com/products.json",
+    fetcher: mockFetch({ status: 200, body: GOOD_FEED }),
+  },
+  "H. feed 404s": {
+    feedUrl: "https://shop.example.com/products.json",
+    fetcher: mockFetch({ status: 404, body: "" }),
+  },
+  "I. no feed_url configured at onboarding": {
+    feedUrl: null,
+    fetcher: mockFetch({ status: 200, body: GOOD_FEED }), // never called — no feed_url to fetch
+  },
+};
+
+for (const [name, { feedUrl, fetcher }] of Object.entries(feedScenarios)) {
+  const { signals } = await runFeedChecks(feedUrl, fetcher, "https://shop.example.com");
 
   console.log(`\n=== ${name} ===`);
   for (const r of signals) {

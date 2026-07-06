@@ -148,17 +148,23 @@ export async function insertPillarScores(
 export interface SiteConfig {
   id: string;
   domain: string | null;
+  rootUrl: string | null;
   identityLinkingOptOut: boolean;
+  feedUrl: string | null;
 }
 
 export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<SiteConfig> {
-  const rows = await rest<Array<{ id: string; domain: string | null; identity_linking_opt_out: boolean }>>(
-    cfg,
-    "GET",
-    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,identity_linking_opt_out&limit=1`,
-  );
+  const rows = await rest<
+    Array<{ id: string; domain: string | null; root_url: string | null; identity_linking_opt_out: boolean; feed_url: string | null }>
+  >(cfg, "GET", `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,identity_linking_opt_out,feed_url&limit=1`);
   if (!rows[0]) throw new Error(`site not found: ${siteId}`);
-  return { id: rows[0].id, domain: rows[0].domain, identityLinkingOptOut: rows[0].identity_linking_opt_out };
+  return {
+    id: rows[0].id,
+    domain: rows[0].domain,
+    rootUrl: rows[0].root_url,
+    identityLinkingOptOut: rows[0].identity_linking_opt_out,
+    feedUrl: rows[0].feed_url,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +174,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
 
 export async function ensureDevSite(
   cfg: SupabaseConfig,
-  opts: { clientName: string; domain: string; rootUrl?: string },
+  opts: { clientName: string; domain: string; rootUrl?: string; feedUrl?: string },
 ): Promise<string> {
   // 1. Client (by name)
   const existingClients = await rest<Array<{ id: string }>>(
@@ -198,6 +204,7 @@ export async function ensureDevSite(
       domain: opts.domain,
       root_url: opts.rootUrl ?? `https://${opts.domain}`,
       is_ecommerce: true,
+      ...(opts.feedUrl ? { feed_url: opts.feedUrl } : {}),
     },
   ]);
   return createdSites[0].id;

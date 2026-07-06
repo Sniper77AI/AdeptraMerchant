@@ -14,6 +14,15 @@ import {
   sig_capability_catalog_declared,
   sig_capability_identity_linking_declared,
 } from "./capabilityChecks.ts";
+import {
+  runFeedChecks,
+  fetchFeed,
+  parseShopifyFeed,
+  parseGoogleMerchantFeed,
+  sig_feed_available,
+  sig_native_commerce_attribute,
+  type FeedState,
+} from "./feedChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -228,7 +237,123 @@ const mockEndpointThrow: Fetcher = async () => {
 }
 
 // ---------------------------------------------------------------------------
-// 4. httpFetcher (stubbed globalThis.fetch)
+// 4. feedChecks (Category 2: feed_available + native_commerce_attribute)
+// ---------------------------------------------------------------------------
+
+const SHOPIFY_FEED_BODY = JSON.stringify({
+  products: [
+    {
+      id: 1,
+      handle: "widget",
+      title: "Widget",
+      variants: [{ sku: "W-1", price: "19.99", available: true }],
+      native_commerce: true,
+    },
+    {
+      id: 2,
+      handle: "gadget",
+      title: "Gadget",
+      variants: [{ sku: "G-1", price: "29.99", available: false }],
+    },
+  ],
+});
+
+const GOOGLE_FEED_BODY = `<?xml version="1.0"?>
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"><channel>
+<item>
+  <g:id>101</g:id>
+  <title>Widget</title>
+  <link>https://shop.example.com/products/widget</link>
+  <g:price>19.99 USD</g:price>
+  <g:availability>in stock</g:availability>
+</item>
+<item>
+  <g:id>102</g:id>
+  <title><![CDATA[Gadget & Co]]></title>
+  <link>https://shop.example.com/products/gadget</link>
+  <g:price>29.99 USD</g:price>
+  <g:availability>out of stock</g:availability>
+</item>
+</channel></rss>`;
+
+{
+  const items = parseShopifyFeed(JSON.parse(SHOPIFY_FEED_BODY).products, "https://shop.example.com");
+  check("parseShopifyFeed: item count", items.length === 2, items);
+  check("parseShopifyFeed: price parsed from first variant", items[0].price === 19.99, items[0]);
+  check("parseShopifyFeed: available true when any variant available", items[0].available === true, items[0]);
+  check("parseShopifyFeed: available false when no variant available", items[1].available === false, items[1]);
+  check("parseShopifyFeed: link built from handle + rootUrl", items[0].link === "https://shop.example.com/products/widget", items[0]);
+  check("parseShopifyFeed: native_commerce carried through in raw", items[0].raw?.native_commerce === true, items[0]);
+}
+
+{
+  const items = parseGoogleMerchantFeed(GOOGLE_FEED_BODY);
+  check("parseGoogleMerchantFeed: item count", items.length === 2, items);
+  check("parseGoogleMerchantFeed: id from g:id", items[0].id === "101", items[0]);
+  check("parseGoogleMerchantFeed: price split from 'N.NN CUR'", items[0].price === 19.99 && items[0].currency === "USD", items[0]);
+  check("parseGoogleMerchantFeed: availability true on 'in stock'", items[0].available === true, items[0]);
+  check("parseGoogleMerchantFeed: availability false on 'out of stock'", items[1].available === false, items[1]);
+  check("parseGoogleMerchantFeed: CDATA title unwrapped", items[1].title === "Gadget & Co", items[1]);
+}
+
+{
+  const mockShopifyFeed: Fetcher = async () => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: SHOPIFY_FEED_BODY,
+    redirectChain: [],
+    requiresAuth: false,
+  });
+  const feed = await fetchFeed("https://shop.example.com/products.json", mockShopifyFeed, "https://shop.example.com");
+  check("fetchFeed: detects shopify_json format", feed.format === "shopify_json", feed);
+  check("fetchFeed: parses both items", feed.items.length === 2, feed);
+
+  const available = sig_feed_available(feed);
+  check("feed_available: pass on reachable, recognized, non-empty feed", available.status === "pass", available);
+
+  const nativeCommerce = sig_native_commerce_attribute(feed);
+  check("native_commerce_attribute: partial when present on some but not all", nativeCommerce.status === "partial", nativeCommerce);
+}
+
+{
+  const mock404: Fetcher = async () => ({ status: 404, headers: {}, body: "", redirectChain: [], requiresAuth: false });
+  const feed = await fetchFeed("https://shop.example.com/missing.json", mock404);
+  check("feed_available: fail when feed unreachable (404)", sig_feed_available(feed).status === "fail", feed);
+}
+
+{
+  const mockUnrecognized: Fetcher = async () => ({
+    status: 200,
+    headers: { "content-type": "text/plain" },
+    body: "not a feed",
+    redirectChain: [],
+    requiresAuth: false,
+  });
+  const feed = await fetchFeed("https://shop.example.com/weird", mockUnrecognized);
+  check("feed_available: partial when reachable but unrecognized format", sig_feed_available(feed).status === "partial", feed);
+}
+
+{
+  const noFeed: FeedState | null = null;
+  check("feed_available: not_applicable when no feed_url configured", sig_feed_available(noFeed).status === "not_applicable");
+  check("native_commerce_attribute: not_applicable when no feed_url configured", sig_native_commerce_attribute(noFeed).status === "not_applicable");
+}
+
+{
+  // No feedUrl at all — runFeedChecks should short-circuit without calling the fetcher.
+  let called = false;
+  const shouldNotBeCalled: Fetcher = async () => {
+    called = true;
+    return { status: 200, headers: {}, body: "{}", redirectChain: [], requiresAuth: false };
+  };
+  const { feed, signals } = await runFeedChecks(null, shouldNotBeCalled);
+  check("runFeedChecks: fetcher not called when feedUrl is null", called === false);
+  check("runFeedChecks: feed is null when feedUrl is null", feed === null);
+  check("runFeedChecks: both signals not_applicable", signals.every((s) => s.status === "not_applicable"), signals);
+}
+
+// ---------------------------------------------------------------------------
+// 5. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {
