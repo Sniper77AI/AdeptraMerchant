@@ -41,6 +41,27 @@ function capabilityEntries(m: ManifestState, capabilityId: string): any[] {
   return Array.isArray(entries) ? entries : [];
 }
 
+/** Catalog is commonly split into sub-capabilities in production manifests
+ *  (e.g. Shopify's dev.ucp.shopping.catalog.search / .catalog.lookup, layered
+ *  under a vendor capability that `extends` them) rather than declared as a
+ *  single flat `dev.ucp.shopping.catalog` key. Match either shape. */
+function catalogCapability(m: ManifestState): { entries: any[]; matchedKeys: string[] } {
+  const capabilities = m.parsed?.ucp?.capabilities;
+  const matchedKeys: string[] = [];
+  const entries: any[] = [];
+  if (capabilities && typeof capabilities === "object") {
+    for (const key of Object.keys(capabilities)) {
+      if (key !== "dev.ucp.shopping.catalog" && !key.startsWith("dev.ucp.shopping.catalog.")) continue;
+      const arr = capabilities[key];
+      if (Array.isArray(arr) && arr.length > 0) {
+        matchedKeys.push(key);
+        entries.push(...arr);
+      }
+    }
+  }
+  return { entries, matchedKeys };
+}
+
 // ---------------------------------------------------------------------------
 // Signal functions (pure) — one per signal_key in Category 3
 // ---------------------------------------------------------------------------
@@ -115,11 +136,13 @@ export function sig_capability_cart_declared(m: ManifestState): SignalRow {
 
 export function sig_capability_catalog_declared(m: ManifestState): SignalRow {
   const cfg = W.catalog;
-  const entries = capabilityEntries(m, "dev.ucp.shopping.catalog");
+  const { entries, matchedKeys } = catalogCapability(m);
   const declared = entries.length > 0;
 
   const status: SignalRow["status"] = declared ? "pass" : "fail";
-  const fix = declared ? null : "Declare dev.ucp.shopping.catalog in ucp.capabilities for product catalog access.";
+  const fix = declared
+    ? null
+    : "Declare dev.ucp.shopping.catalog (or its .search/.lookup sub-capabilities) in ucp.capabilities for product catalog access.";
 
   return {
     pillar: "ucp",
@@ -130,7 +153,7 @@ export function sig_capability_catalog_declared(m: ManifestState): SignalRow {
     score_contribution: contribution(cfg.weight, status),
     impact: cfg.impact,
     effort: cfg.effort,
-    evidence_json: { declared },
+    evidence_json: { declared, matched_keys: matchedKeys },
     fix_summary: fix,
   };
 }

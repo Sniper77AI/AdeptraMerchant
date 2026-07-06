@@ -8,7 +8,7 @@
  */
 
 import { runManifestChecks, type Fetcher, type ManifestState } from "./manifestChecks.ts";
-import { runCapabilityChecks, checkEndpointReachability } from "./capabilityChecks.ts";
+import { runCapabilityChecks, checkEndpointReachability, sig_capability_catalog_declared } from "./capabilityChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -153,6 +153,25 @@ const mockEndpointThrow: Fetcher = async () => {
 {
   const errSignal = await checkEndpointReachability(FULL_CAPS_STATE, mockEndpointError);
   check("endpoint_reachability: partial on non-2xx/3xx (500)", errSignal.status === "partial", errSignal);
+}
+
+{
+  // Real-world shape (Skims/Shopify): no flat "dev.ucp.shopping.catalog" key —
+  // catalog is split into .search / .lookup sub-capabilities instead.
+  const SPLIT_CATALOG_STATE: ManifestState = {
+    ...EMPTY_CAPS_STATE,
+    parsed: {
+      ucp: {
+        version: "2026-04-08",
+        capabilities: {
+          "dev.ucp.shopping.catalog.search": [{ version: "2026-04-08" }],
+          "dev.ucp.shopping.catalog.lookup": [{ version: "2026-04-08" }],
+        },
+      },
+    },
+  };
+  const signal = sig_capability_catalog_declared(SPLIT_CATALOG_STATE);
+  check("capability_catalog_declared: pass on split .search/.lookup sub-capabilities (no flat key)", signal.status === "pass", signal);
 }
 
 {
