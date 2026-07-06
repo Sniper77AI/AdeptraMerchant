@@ -91,16 +91,19 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
 
 ### Open items / known shortcuts
 
-- **"No manifest" vs. "scored 0%" are currently indistinguishable.** A store with
-  no `/.well-known/ucp` (404) and a store that genuinely meets zero requirements
-  both land at `overall_score = 0.00`. Consider a distinct run state (e.g.
-  "no_manifest") so the dashboard can show "hasn't started UCP" rather than a
-  punitive 0% — more accurate and better for sales conversations. (Surfaced by
-  gymshark.com: 404 at the well-known path.)
+- ~~"No manifest" vs. "scored 0%" are currently indistinguishable.~~ **Fixed
+  2026-07-06.** `analysis_runs.status` gained a distinct `no_manifest` value
+  (migration `20260706000000_no_manifest_status_and_identity_linking_opt_out.sql`).
+  `runLive.ts` now marks a run `no_manifest` with `overall_score = NULL` when the
+  manifest is unreachable or 404s (`isManifestMissing` in `manifestChecks.ts`),
+  instead of `complete` with a punitive `0.00`. Verified live against
+  gymshark.com.
 
-- **`identity_linking` absence is scored as `fail`, but the spec allows N/A.**
-  When a merchant opts out of account linking by design, the correct status is
-  `not_applicable` (dropped from the denominator), not `fail`. Detecting the
-  opt-out needs an onboarding-level flag we don't model yet. MVP treats "not
-  declared" as fail; revisit once onboarding captures the opt-out so scores
-  aren't unfairly dragged down. (Noted in capabilityChecks.ts.)
+- ~~`identity_linking` absence is scored as `fail`, but the spec allows N/A.~~
+  **Fixed 2026-07-06.** Added `sites.identity_linking_opt_out` (defaults
+  `false`, same migration as above). `capability_identity_linking_declared`
+  now returns `not_applicable` — dropped from the pillar denominator — when a
+  merchant has opted out. Verified live against skims.com (score moved
+  86.84% → 91.67% with the flag set, back to 86.84% on revert). **Remaining
+  gap:** there's no onboarding UI yet for a merchant/operator to set this flag
+  themselves — today it's a plain DB column, toggled only via SQL.

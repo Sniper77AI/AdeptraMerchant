@@ -359,3 +359,12 @@ export async function runManifestChecks(domain: string, fetcher: Fetcher): Promi
   ];
   return { manifest, signals };
 }
+
+/** True when there's no manifest to score at all (unreachable or 404) — distinct
+ *  from a manifest that's present but scores poorly (e.g. malformed JSON, wrong
+ *  content-type). Lets the caller mark the run with a distinct status ('no_manifest')
+ *  instead of a punitive 0%, so "hasn't started UCP" and "scored zero" don't collapse
+ *  into the same number on a dashboard. */
+export function isManifestMissing(m: ManifestState): boolean {
+  return !m.reachable || m.httpStatus === 404;
+}

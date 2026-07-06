@@ -58,7 +58,8 @@ async function rest<T>(
 
 // ---------------------------------------------------------------------------
 // Run lifecycle (analysis_runs are immutable facts; only status/score fields
-// transition, matching the queued → running → complete/failed check constraint)
+// transition, matching the queued → running → complete/failed/no_manifest
+// check constraint)
 // ---------------------------------------------------------------------------
 
 export async function createRun(cfg: SupabaseConfig, siteId: string): Promise<RunHandle> {
@@ -84,6 +85,16 @@ export async function failRun(cfg: SupabaseConfig, runId: string, errorDetail: s
   await rest(cfg, "PATCH", `/rest/v1/analysis_runs?id=eq.${runId}`, {
     status: "failed",
     error_detail: errorDetail.slice(0, 2000),
+    completed_at: new Date().toISOString(),
+  });
+}
+
+/** No reachable manifest at all (unreachable or 404) — distinct from a manifest
+ *  that's present but scores 0%. overall_score is left NULL: there's nothing to
+ *  score, not a score of zero. See manifestChecks.ts `isManifestMissing`. */
+export async function markNoManifest(cfg: SupabaseConfig, runId: string): Promise<void> {
+  await rest(cfg, "PATCH", `/rest/v1/analysis_runs?id=eq.${runId}`, {
+    status: "no_manifest",
     completed_at: new Date().toISOString(),
   });
 }
@@ -127,6 +138,27 @@ export async function insertPillarScores(
   const rows = pillars.map((p) => ({ run_id: runId, ...p }));
   const inserted = await rest<unknown[]>(cfg, "POST", "/rest/v1/pillar_scores", rows);
   return inserted.length;
+}
+
+// ---------------------------------------------------------------------------
+// Site config (onboarding-level flags that shape scoring, e.g. capability
+// opt-outs a merchant declares once rather than something derived per-run)
+// ---------------------------------------------------------------------------
+
+export interface SiteConfig {
+  id: string;
+  domain: string | null;
+  identityLinkingOptOut: boolean;
+}
+
+export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<SiteConfig> {
+  const rows = await rest<Array<{ id: string; domain: string | null; identity_linking_opt_out: boolean }>>(
+    cfg,
+    "GET",
+    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,identity_linking_opt_out&limit=1`,
+  );
+  if (!rows[0]) throw new Error(`site not found: ${siteId}`);
+  return { id: rows[0].id, domain: rows[0].domain, identityLinkingOptOut: rows[0].identity_linking_opt_out };
 }
 
 // ---------------------------------------------------------------------------

@@ -7,8 +7,13 @@
  * Run: node --experimental-strip-types test_live_pipeline.ts
  */
 
-import { runManifestChecks, type Fetcher, type ManifestState } from "./manifestChecks.ts";
-import { runCapabilityChecks, checkEndpointReachability, sig_capability_catalog_declared } from "./capabilityChecks.ts";
+import { runManifestChecks, isManifestMissing, type Fetcher, type ManifestState } from "./manifestChecks.ts";
+import {
+  runCapabilityChecks,
+  checkEndpointReachability,
+  sig_capability_catalog_declared,
+  sig_capability_identity_linking_declared,
+} from "./capabilityChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -190,7 +195,40 @@ const mockEndpointThrow: Fetcher = async () => {
 }
 
 // ---------------------------------------------------------------------------
-// 3. httpFetcher (stubbed globalThis.fetch)
+// 3. Known-shortcut fixes: no_manifest detection + identity_linking opt-out
+// ---------------------------------------------------------------------------
+
+{
+  const missing404: ManifestState = { ...FULL_CAPS_STATE, reachable: true, httpStatus: 404, parsed: null, isValidJson: false };
+  const missingUnreachable: ManifestState = { ...FULL_CAPS_STATE, reachable: false, httpStatus: null, parsed: null, isValidJson: false };
+  const presentButInvalid: ManifestState = { ...FULL_CAPS_STATE, reachable: true, httpStatus: 200, parsed: null, isValidJson: false };
+  const presentAndGood: ManifestState = FULL_CAPS_STATE;
+
+  check("isManifestMissing: true on 404", isManifestMissing(missing404) === true);
+  check("isManifestMissing: true when unreachable (fetch failed)", isManifestMissing(missingUnreachable) === true);
+  check(
+    "isManifestMissing: false when manifest present but invalid JSON (200) — a real fail, not a missing manifest",
+    isManifestMissing(presentButInvalid) === false,
+  );
+  check("isManifestMissing: false when manifest present and valid", isManifestMissing(presentAndGood) === false);
+}
+
+{
+  const optedOut = sig_capability_identity_linking_declared(EMPTY_CAPS_STATE, { identityLinkingOptOut: true });
+  check("identity_linking: not_applicable when opted out, even though not declared", optedOut.status === "not_applicable", optedOut);
+
+  const notOptedOut = sig_capability_identity_linking_declared(EMPTY_CAPS_STATE, { identityLinkingOptOut: false });
+  check("identity_linking: still fail when not opted out and not declared (no regression)", notOptedOut.status === "fail", notOptedOut);
+
+  const noOptsArg = sig_capability_identity_linking_declared(EMPTY_CAPS_STATE);
+  check("identity_linking: defaults to fail when opts omitted entirely (backward compatible)", noOptsArg.status === "fail", noOptsArg);
+
+  const pillars = scorePillars([optedOut]);
+  check("identity_linking: opted-out signal drops out of the pillar denominator", pillars[0].signals_total === 0, pillars[0]);
+}
+
+// ---------------------------------------------------------------------------
+// 4. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {

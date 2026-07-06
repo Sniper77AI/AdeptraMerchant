@@ -193,18 +193,24 @@ export function sig_capability_fulfillment_declared(m: ManifestState): SignalRow
   };
 }
 
-export function sig_capability_identity_linking_declared(m: ManifestState): SignalRow {
+export function sig_capability_identity_linking_declared(
+  m: ManifestState,
+  opts?: { identityLinkingOptOut?: boolean },
+): SignalRow {
   const cfg = W.identityLinking;
   const entries = capabilityEntries(m, "dev.ucp.common.identity_linking");
   const declared = entries.length > 0;
   const scopes: string[] = entries.flatMap((e) => (Array.isArray(e?.scopes) ? e.scopes : []));
+  const optedOut = !!opts?.identityLinkingOptOut;
 
-  // NOTE: spec allows N/A when a merchant opts out of account linking by design,
-  // but detecting that requires an onboarding-level flag we don't model yet.
-  // MVP treats "not declared" as fail; revisit once onboarding captures the opt-out.
+  // Spec allows N/A when a merchant opts out of account linking by design — that's
+  // an onboarding-level decision (sites.identity_linking_opt_out), not something
+  // derivable from the manifest itself.
   let status: SignalRow["status"];
   let fix: string | null = null;
-  if (!declared) {
+  if (optedOut) {
+    status = "not_applicable";
+  } else if (!declared) {
     status = "fail";
     fix = "Declare dev.ucp.common.identity_linking in ucp.capabilities to support account-linked experiences.";
   } else if (scopes.length > 0) {
@@ -223,7 +229,7 @@ export function sig_capability_identity_linking_declared(m: ManifestState): Sign
     score_contribution: contribution(cfg.weight, status),
     impact: cfg.impact,
     effort: cfg.effort,
-    evidence_json: { declared, scopes },
+    evidence_json: { declared, scopes, opted_out: optedOut },
     fix_summary: fix,
   };
 }
@@ -289,13 +295,17 @@ export async function checkEndpointReachability(
 // Orchestrator: run all Category-3 signals against an already-fetched manifest.
 // ---------------------------------------------------------------------------
 
-export async function runCapabilityChecks(manifest: ManifestState, fetcher: Fetcher): Promise<SignalRow[]> {
+export async function runCapabilityChecks(
+  manifest: ManifestState,
+  fetcher: Fetcher,
+  opts?: { identityLinkingOptOut?: boolean },
+): Promise<SignalRow[]> {
   return [
     sig_capability_checkout_declared(manifest),
     sig_capability_cart_declared(manifest),
     sig_capability_catalog_declared(manifest),
     sig_capability_fulfillment_declared(manifest),
-    sig_capability_identity_linking_declared(manifest),
+    sig_capability_identity_linking_declared(manifest, opts),
     await checkEndpointReachability(manifest, fetcher),
   ];
 }

@@ -16,7 +16,7 @@
  * explicit config — in n8n, a code node builds the same calls from credentials.
  */
 
-import { runManifestChecks } from "./manifestChecks.ts";
+import { runManifestChecks, isManifestMissing } from "./manifestChecks.ts";
 import { runCapabilityChecks } from "./capabilityChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
@@ -24,9 +24,11 @@ import {
   createRun,
   completeRun,
   failRun,
+  markNoManifest,
   insertSignals,
   insertPillarScores,
   ensureDevSite,
+  getSite,
   type SupabaseConfig,
 } from "./supabaseSink.ts";
 
@@ -48,6 +50,8 @@ if (!cfg.url || !cfg.serviceRoleKey) {
 const siteId = siteIdArg ?? (await ensureDevSite(cfg, { clientName: "Adeptra Dev", domain }));
 console.log(`site:  ${siteId}`);
 
+const site = await getSite(cfg, siteId);
+
 const run = await createRun(cfg, siteId);
 console.log(`run:   ${run.runId} (running)`);
 
@@ -55,20 +59,28 @@ try {
   const { manifest, signals: manifestSignals } = await runManifestChecks(domain, httpFetcher);
   console.log(`fetch: ${manifest.url} → ${manifest.httpStatus ?? "unreachable"}${manifest.errorNote ? ` (${manifest.errorNote})` : ""}`);
 
-  const capabilitySignals = await runCapabilityChecks(manifest, httpFetcher);
+  const capabilitySignals = await runCapabilityChecks(manifest, httpFetcher, {
+    identityLinkingOptOut: site.identityLinkingOptOut,
+  });
   const signals = [...manifestSignals, ...capabilitySignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);
   const nPillars = await insertPillarScores(cfg, run.runId, pillars);
   const overall = overallScore(pillars);
-  await completeRun(cfg, run.runId, overall);
+
+  const noManifest = isManifestMissing(manifest);
+  if (noManifest) {
+    await markNoManifest(cfg, run.runId);
+  } else {
+    await completeRun(cfg, run.runId, overall);
+  }
 
   console.log(`wrote: ${nSignals} signals, ${nPillars} pillar score(s)`);
   for (const p of pillars) {
     console.log(`score: ${p.pillar} = ${p.score}% (${p.signals_passed}/${p.signals_total} passed)`);
   }
-  console.log(`run:   ${run.runId} (complete, overall ${overall})`);
+  console.log(`run:   ${run.runId} (${noManifest ? "no_manifest" : `complete, overall ${overall}`})`);
 } catch (e) {
   const msg = (e as Error).message ?? String(e);
   await failRun(cfg, run.runId, msg).catch(() => undefined);
