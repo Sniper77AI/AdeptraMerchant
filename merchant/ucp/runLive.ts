@@ -17,6 +17,7 @@
  */
 
 import { runManifestChecks } from "./manifestChecks.ts";
+import { runCapabilityChecks } from "./capabilityChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -51,8 +52,11 @@ const run = await createRun(cfg, siteId);
 console.log(`run:   ${run.runId} (running)`);
 
 try {
-  const { manifest, signals } = await runManifestChecks(domain, httpFetcher);
+  const { manifest, signals: manifestSignals } = await runManifestChecks(domain, httpFetcher);
   console.log(`fetch: ${manifest.url} → ${manifest.httpStatus ?? "unreachable"}${manifest.errorNote ? ` (${manifest.errorNote})` : ""}`);
+
+  const capabilitySignals = await runCapabilityChecks(manifest, httpFetcher);
+  const signals = [...manifestSignals, ...capabilitySignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);

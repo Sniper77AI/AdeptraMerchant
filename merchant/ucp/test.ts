@@ -1,4 +1,5 @@
 import { runManifestChecks, type Fetcher, type FetchResult } from "./manifestChecks.ts";
+import { runCapabilityChecks } from "./capabilityChecks.ts";
 
 // --- Three mock manifests ---------------------------------------------------
 
@@ -71,6 +72,56 @@ for (const [name, fetcher] of Object.entries(scenarios)) {
   const pct = achievable > 0 ? ((earned / achievable) * 100).toFixed(0) : "n/a";
 
   console.log(`\n=== ${name} ===  (manifest sub-score: ${pct}%)`);
+  for (const r of signals) {
+    const prio = ((r.impact * r.weight) / Math.max(r.effort, 1)).toFixed(2);
+    console.log(`  ${bar(r.status)}  ${r.signal_key.padEnd(32)} w=${r.weight} prio=${prio}  ${r.fix_summary ?? ""}`);
+  }
+}
+console.log("");
+
+// --- Category 3: Capabilities -----------------------------------------------
+
+const FULL_CAPS_MANIFEST = JSON.stringify({
+  ucp: {
+    version: "2026-04-08",
+    services: {
+      "dev.ucp.shopping": [
+        {
+          version: "2026-04-08",
+          transport: "rest",
+          endpoint: "https://shop.example.com/ucp/v1",
+          schema: "https://ucp.dev/2026-04-08/services/shopping/rest.openapi.json",
+        },
+      ],
+    },
+    capabilities: {
+      "dev.ucp.shopping.checkout": [{ version: "2026-04-08", schema: "https://ucp.dev/2026-04-08/schemas/shopping/checkout.json" }],
+      "dev.ucp.shopping.cart": [{ version: "2026-04-08" }],
+      "dev.ucp.shopping.catalog": [{ version: "2026-04-08" }],
+      "dev.ucp.shopping.fulfillment": [{ version: "2026-04-08", schema: "https://ucp.dev/2026-04-08/schemas/shopping/fulfillment.json" }],
+      "dev.ucp.common.identity_linking": [{ scopes: ["dev.ucp.shopping.order:read"] }],
+    },
+  },
+});
+
+const NO_CAPS_MANIFEST = JSON.stringify({ ucp: { version: "2026-04-08", services: {} } });
+
+const capScenarios: Record<string, { manifestFetcher: Fetcher; endpointFetcher: Fetcher }> = {
+  "E. full capabilities + reachable endpoint": {
+    manifestFetcher: mockFetch({ status: 200, body: FULL_CAPS_MANIFEST }),
+    endpointFetcher: mockFetch({ status: 200, body: "{}" }),
+  },
+  "F. no capabilities, no endpoint declared": {
+    manifestFetcher: mockFetch({ status: 200, body: NO_CAPS_MANIFEST }),
+    endpointFetcher: mockFetch({ status: 500, body: "" }), // never called — no endpoint to probe
+  },
+};
+
+for (const [name, { manifestFetcher, endpointFetcher }] of Object.entries(capScenarios)) {
+  const { manifest } = await runManifestChecks("shop.example.com", manifestFetcher);
+  const signals = await runCapabilityChecks(manifest, endpointFetcher);
+
+  console.log(`\n=== ${name} ===`);
   for (const r of signals) {
     const prio = ((r.impact * r.weight) / Math.max(r.effort, 1)).toFixed(2);
     console.log(`  ${bar(r.status)}  ${r.signal_key.padEnd(32)} w=${r.weight} prio=${prio}  ${r.fix_summary ?? ""}`);
