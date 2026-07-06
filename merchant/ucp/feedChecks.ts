@@ -272,7 +272,9 @@ export function sig_feed_available(feed: FeedState | null): SignalRow {
   };
 }
 
-function truthy(v: unknown): boolean {
+/** Shared with artifacts/feedArtifact.ts — the "does this item already carry
+ *  the attribute" test must stay identical between detection and generation. */
+export function truthy(v: unknown): boolean {
   return v === true || v === "true" || v === "1" || v === 1;
 }
 

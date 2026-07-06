@@ -2,9 +2,10 @@
  * Adeptra Merchant — UCP Manifest Artifact Generator (artifact_type = 'ucp_manifest').
  *
  * PURE module: no network, no DB, no secrets, no n8n/Supabase imports. Takes
- * the already-fetched ManifestState + the run's SignalRow[] and returns a
- * draft artifact (or null if there's nothing to fix) — same portability
- * contract as every signal-check module.
+ * an ArtifactContext (manifest + feed + signals — see ./types.ts) and returns
+ * a draft artifact (or null if there's nothing to fix) — same portability
+ * contract as every signal-check module. Only reads ctx.manifest/ctx.signals;
+ * ctx.feed is unused here (it's feedArtifact.ts's input).
  *
  * SCOPE: only signals whose fix lives INSIDE the manifest file — Category 1
  * (discovery_manifest) + the Category 3 capability *declarations*.
@@ -22,7 +23,8 @@
  * partial (a guessed scope is still a guess).
  */
 
-import { CURRENT_UCP_VERSION, VALID_AUTHORITY_HOSTS, ALLOWED_TRANSPORTS, type ManifestState, type SignalRow } from "../manifestChecks.ts";
+import { CURRENT_UCP_VERSION, VALID_AUTHORITY_HOSTS, ALLOWED_TRANSPORTS, type SignalRow } from "../manifestChecks.ts";
+import type { ArtifactContext, ArtifactDraft, ArtifactChangelog } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical values (verified against signal-specs.md — the spec doc gives the
@@ -71,25 +73,6 @@ function canonicalPathnames(): Set<string> {
     urls.push(capabilitySpecUrl(name), capabilitySchemaUrl(name));
   }
   return new Set(urls.map((u) => new URL(u).pathname));
-}
-
-// ---------------------------------------------------------------------------
-// Data contract
-// ---------------------------------------------------------------------------
-
-export interface ArtifactChangelog {
-  added: string[];
-  corrected: string[];
-  must_complete: string[];
-  flagged: string[];
-}
-
-export interface ArtifactDraft {
-  artifact_type: "ucp_manifest";
-  target_url: string;
-  content: string;
-  resolves_signal_keys: string[];
-  changelog: ArtifactChangelog;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +140,8 @@ function fixAuthorityInContainer(container: any, containerLabel: string, canonic
 // Generator
 // ---------------------------------------------------------------------------
 
-export function generateManifestArtifact(manifest: ManifestState, signals: SignalRow[]): ArtifactDraft | null {
+export function generateManifestArtifact(ctx: ArtifactContext): ArtifactDraft | null {
+  const { manifest, signals } = ctx;
   const sig = byKey(signals);
   const manifestPresent = sig.get("ucp_manifest_present");
   const versionDeclared = sig.get("ucp_manifest_version_declared");

@@ -1,6 +1,7 @@
 /**
- * Tests for the UCP manifest artifact generator (mock-driven, no network/DB).
+ * Tests for the artifact generators (mock-driven, no network/DB).
  *
+ * Manifest generator (artifact_type='ucp_manifest'):
  * 1. No-manifest case: complete starter scaffold.
  * 2. Partial-manifest (skims-like) case: preserve valid config, fix only
  *    what's broken, including a passing sub-capability catalog shape
@@ -9,6 +10,17 @@
  *    signal functions must show every AUTO-FIX signal passing, while
  *    identity_linking and endpoint_reachability are NOT claimed as fixed.
  * 4. Purity: no async/Promise, deterministic output, no input mutation.
+ *
+ * Feed generator (artifact_type='feed_fix'):
+ * 5. native_commerce fail (0 of N have it) -> full supplemental feed.
+ * 6. native_commerce partial (some have it) -> only the missing ones.
+ * 7. native_commerce pass -> null (nothing to do).
+ * 8. No feed configured but native_commerce fail (hand-built edge case,
+ *    since the real signal function never produces this combo) -> flag-only,
+ *    never fabricates a feed.
+ * 9. Purity + determinism.
+ * 10. A consistency-signal failure (e.g. price mismatch) -> flagged, not
+ *     auto-fixed, resolves nothing.
  *
  * Run: node --experimental-strip-types test_artifacts.ts
  */
@@ -31,7 +43,10 @@ import {
   sig_capability_identity_linking_declared,
   checkEndpointReachability,
 } from "./capabilityChecks.ts";
+import { sig_native_commerce_attribute, type FeedState, type FeedItem } from "./feedChecks.ts";
 import { generateManifestArtifact } from "./artifacts/manifestArtifact.ts";
+import { generateFeedArtifact } from "./artifacts/feedArtifact.ts";
+import { runArtifacts, type ArtifactContext } from "./artifacts/index.ts";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown) {
@@ -53,6 +68,11 @@ function allSignalsFor(manifest: ManifestState): SignalRow[] {
   ];
 }
 
+/** Builds an ArtifactContext for tests that only care about manifest+signals. */
+function mctx(manifest: ManifestState, signals: SignalRow[], feed: FeedState | null = null): ArtifactContext {
+  return { manifest, feed, signals };
+}
+
 // ---------------------------------------------------------------------------
 // 1. No-manifest case
 // ---------------------------------------------------------------------------
@@ -69,7 +89,7 @@ const NO_MANIFEST: ManifestState = {
 };
 
 const noManifestSignals = allSignalsFor(NO_MANIFEST);
-const draft1 = generateManifestArtifact(NO_MANIFEST, noManifestSignals);
+const draft1 = generateManifestArtifact(mctx(NO_MANIFEST, noManifestSignals));
 
 {
   check("no-manifest: generator returns a draft (not null)", draft1 !== null, draft1);
@@ -175,7 +195,7 @@ const sigByKey = new Map(partialSignals.map((s) => [s.signal_key, s]));
   check("fixture sanity: fulfillment capability passes", sigByKey.get("capability_fulfillment_declared")?.status === "pass");
 }
 
-const draft2 = generateManifestArtifact(PARTIAL_MANIFEST, partialSignals);
+const draft2 = generateManifestArtifact(mctx(PARTIAL_MANIFEST, partialSignals));
 
 {
   check("partial: generator returns a draft (not null)", draft2 !== null, draft2);
@@ -268,7 +288,7 @@ const draft2 = generateManifestArtifact(PARTIAL_MANIFEST, partialSignals);
     },
   };
   const signals = allSignalsFor(unmappableManifest);
-  const draft = generateManifestArtifact(unmappableManifest, signals);
+  const draft = generateManifestArtifact(mctx(unmappableManifest, signals));
   const flaggedCountBefore = draft!.changelog.flagged.length;
 
   check(
@@ -333,15 +353,189 @@ const draft2 = generateManifestArtifact(PARTIAL_MANIFEST, partialSignals);
 // ---------------------------------------------------------------------------
 
 {
-  const result = generateManifestArtifact(PARTIAL_MANIFEST, partialSignals);
+  const result = generateManifestArtifact(mctx(PARTIAL_MANIFEST, partialSignals));
   check("purity: generator is synchronous, not a Promise", !(result instanceof Promise));
 
   const before = JSON.stringify(PARTIAL_MANIFEST);
-  generateManifestArtifact(PARTIAL_MANIFEST, partialSignals);
+  generateManifestArtifact(mctx(PARTIAL_MANIFEST, partialSignals));
   check("purity: does not mutate the input ManifestState", JSON.stringify(PARTIAL_MANIFEST) === before);
 
-  const again = generateManifestArtifact(PARTIAL_MANIFEST, partialSignals);
+  const again = generateManifestArtifact(mctx(PARTIAL_MANIFEST, partialSignals));
   check("purity: identical output across repeated calls with the same input", JSON.stringify(result) === JSON.stringify(again));
+}
+
+// ---------------------------------------------------------------------------
+// Feed generator (artifact_type='feed_fix')
+// ---------------------------------------------------------------------------
+
+function mockFeedItem(id: string, hasNativeCommerce: boolean): FeedItem {
+  return {
+    id,
+    title: `Product ${id}`,
+    description: null,
+    price: 10,
+    currency: null,
+    available: true,
+    link: null,
+    raw: { native_commerce: hasNativeCommerce },
+  };
+}
+
+function mockFeed(items: FeedItem[], format: FeedState["format"] = "shopify_json"): FeedState {
+  return {
+    url: "https://shop.example.com/products.json",
+    reachable: true,
+    httpStatus: 200,
+    contentType: "application/json",
+    format,
+    items,
+  };
+}
+
+// 5. native_commerce fail (0 of 30 have it) -> full supplemental feed.
+{
+  const feed = mockFeed(Array.from({ length: 30 }, (_, i) => mockFeedItem(`P${i + 1}`, false)));
+  const nativeCommerceSignal = sig_native_commerce_attribute(feed);
+  check("feed fixture sanity: fails when 0/30 have the attribute", nativeCommerceSignal.status === "fail", nativeCommerceSignal);
+
+  const draft = generateFeedArtifact(mctx(NO_MANIFEST, [nativeCommerceSignal], feed));
+  check("feed_fix: generator returns a draft (not null)", draft !== null, draft);
+  check("feed_fix: artifact_type is feed_fix", draft!.artifact_type === "feed_fix");
+  check("feed_fix: target_url has no leading slash (upload-artifact convention)", !draft!.target_url.startsWith("/"), draft!.target_url);
+  const idCount = (draft!.content.match(/<g:id>/g) ?? []).length;
+  const nativeCommerceCount = (draft!.content.match(/<g:native_commerce>true<\/g:native_commerce>/g) ?? []).length;
+  check("feed_fix: supplemental feed contains all 30 missing products", idCount === 30, { idCount });
+  check("feed_fix: every item marks native_commerce=true", nativeCommerceCount === 30, { nativeCommerceCount });
+  check(
+    "feed_fix: resolves_signal_keys is exactly [native_commerce_attribute]",
+    JSON.stringify(draft!.resolves_signal_keys) === JSON.stringify(["native_commerce_attribute"]),
+    draft!.resolves_signal_keys,
+  );
+  check(
+    "feed_fix: must_complete carries the review warning (merchant-intent guardrail)",
+    draft!.changelog.must_complete.some((m) => m.toUpperCase().includes("REVIEW")),
+    draft!.changelog,
+  );
+}
+
+// 6. native_commerce partial (10 of 30 have it) -> only the missing 20.
+{
+  const present = Array.from({ length: 10 }, (_, i) => mockFeedItem(`HAS${i + 1}`, true));
+  const missing = Array.from({ length: 20 }, (_, i) => mockFeedItem(`MISS${i + 1}`, false));
+  const feed = mockFeed([...present, ...missing]);
+  const nativeCommerceSignal = sig_native_commerce_attribute(feed);
+  check("feed fixture sanity: partial when some (10/30) have the attribute", nativeCommerceSignal.status === "partial", nativeCommerceSignal);
+
+  const draft = generateFeedArtifact(mctx(NO_MANIFEST, [nativeCommerceSignal], feed));
+  const idCount = (draft!.content.match(/<g:id>/g) ?? []).length;
+  check("feed_fix (partial): only the 20 missing products are included", idCount === 20, { idCount });
+  check(
+    "feed_fix (partial): none of the already-passing product ids appear",
+    !present.some((p) => draft!.content.includes(`<g:id>${p.id}</g:id>`)),
+  );
+  check(
+    "feed_fix (partial): all 20 missing product ids appear",
+    missing.every((m) => draft!.content.includes(`<g:id>${m.id}</g:id>`)),
+  );
+}
+
+// 7. native_commerce pass -> null (nothing to do).
+{
+  const feed = mockFeed(Array.from({ length: 5 }, (_, i) => mockFeedItem(`OK${i + 1}`, true)));
+  const nativeCommerceSignal = sig_native_commerce_attribute(feed);
+  check("feed fixture sanity: passes when all have the attribute", nativeCommerceSignal.status === "pass", nativeCommerceSignal);
+
+  const draft = generateFeedArtifact(mctx(NO_MANIFEST, [nativeCommerceSignal], feed));
+  check("feed_fix: returns null when native_commerce already passes and nothing else fails", draft === null, draft);
+}
+
+// 8. No feed configured but native_commerce is fail — hand-built edge case:
+//    the real sig_native_commerce_attribute always returns not_applicable
+//    when feed is null, so this combination can't occur via the real
+//    pipeline today. It still tests the generator's own guard against
+//    fabricating a feed it has no data for.
+{
+  const fakeFailSignal: SignalRow = {
+    pillar: "ucp",
+    category: "product_data_hygiene",
+    signal_key: "native_commerce_attribute",
+    status: "fail",
+    weight: 2,
+    score_contribution: 0,
+    impact: 5,
+    effort: 2,
+    evidence_json: {},
+    fix_summary: null,
+  };
+  const draft = generateFeedArtifact(mctx(NO_MANIFEST, [fakeFailSignal], null));
+  check("feed_fix: no feed configured -> does not fabricate content", draft !== null && draft.content === "", draft);
+  check(
+    "feed_fix: no feed configured -> flags rather than acts",
+    !!draft && draft.changelog.flagged.some((f) => f.toLowerCase().includes("no usable product feed")),
+    draft?.changelog,
+  );
+  check("feed_fix: no feed configured -> resolves nothing", draft?.resolves_signal_keys.length === 0, draft?.resolves_signal_keys);
+}
+
+// 9. Purity + determinism.
+{
+  const feed = mockFeed(Array.from({ length: 5 }, (_, i) => mockFeedItem(`P${i + 1}`, false)));
+  const nativeCommerceSignal = sig_native_commerce_attribute(feed);
+  const ctx = mctx(NO_MANIFEST, [nativeCommerceSignal], feed);
+
+  const result = generateFeedArtifact(ctx);
+  check("feed_fix purity: synchronous, not a Promise", !(result instanceof Promise));
+
+  const beforeFeed = JSON.stringify(feed);
+  generateFeedArtifact(ctx);
+  check("feed_fix purity: does not mutate the input feed", JSON.stringify(feed) === beforeFeed);
+
+  const again = generateFeedArtifact(ctx);
+  check("feed_fix purity: identical output across repeated calls", JSON.stringify(result) === JSON.stringify(again));
+}
+
+// 10. A consistency-signal failure (price mismatch) -> flagged, not
+//     auto-fixed, resolves nothing.
+{
+  const feed = mockFeed(Array.from({ length: 5 }, (_, i) => mockFeedItem(`P${i + 1}`, true))); // native_commerce passes
+  const nativeCommerceSignal = sig_native_commerce_attribute(feed);
+  const priceFailSignal: SignalRow = {
+    pillar: "ucp",
+    category: "product_data_hygiene",
+    signal_key: "price_consistency_cross_surface",
+    status: "fail",
+    weight: 2,
+    score_contribution: 0,
+    impact: 5,
+    effort: 2,
+    evidence_json: {},
+    fix_summary: null,
+  };
+  const draft = generateFeedArtifact(mctx(NO_MANIFEST, [nativeCommerceSignal, priceFailSignal], feed));
+  check("feed_fix: price mismatch triggers a flag-only draft", draft !== null, draft);
+  check(
+    "feed_fix: price mismatch flagged with a manual-reconciliation message",
+    !!draft && draft.changelog.flagged.some((f) => f.toLowerCase().includes("price mismatch")),
+    draft?.changelog,
+  );
+  check("feed_fix: price mismatch is NOT auto-fixed (no content generated)", draft?.content === "", draft);
+  check("feed_fix: price mismatch resolves nothing", draft?.resolves_signal_keys.length === 0, draft?.resolves_signal_keys);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator integration: both generators wired into runArtifacts(ctx)
+// ---------------------------------------------------------------------------
+
+{
+  const feed = mockFeed(Array.from({ length: 3 }, (_, i) => mockFeedItem(`P${i + 1}`, false)));
+  const signals = [...allSignalsFor(NO_MANIFEST), sig_native_commerce_attribute(feed)];
+  const drafts = runArtifacts({ manifest: NO_MANIFEST, feed, signals });
+  check("runArtifacts: produces both a ucp_manifest and a feed_fix draft", drafts.length === 2, drafts.map((d) => d.artifact_type));
+  check(
+    "runArtifacts: includes one ucp_manifest and one feed_fix",
+    drafts.some((d) => d.artifact_type === "ucp_manifest") && drafts.some((d) => d.artifact_type === "feed_fix"),
+    drafts.map((d) => d.artifact_type),
+  );
 }
 
 console.log(failures === 0 ? "\nAll artifact tests passed." : `\n${failures} FAILURE(S)`);

@@ -18,6 +18,7 @@ merchant/
                                                         # sites.identity_linking_opt_out
       20260706010000_sites_feed_url.sql                # sites.feed_url (Category 2 onboarding input)
       20260706020000_sites_merchant_center_eligibility.sql # Category 6 onboarding attestation columns
+      20260706030000_add_artifacts_changelog_json.sql  # artifacts.changelog_json (persists ArtifactChangelog)
   ucp/
     signal-specs.md        # The core IP: exact pass/partial/fail rule + evidence + fix
                            # for every UCP compliance signal, grounded in UCP 2026-04-08
@@ -55,32 +56,47 @@ merchant/
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
                            # (excludes not_applicable AND weight=0 signals from scoring)
     artifacts/
-      manifestArtifact.ts  # Artifact #1 — pure generator for artifact_type='ucp_manifest'. Takes
-                           # the already-fetched ManifestState + a run's SignalRow[], returns a
-                           # draft (or null if nothing to fix). Preserves all valid existing config
-                           # (including a passing sub-capability catalog shape, byte-for-byte);
-                           # auto-fixes use real canonical values; the service endpoint is an
-                           # obvious placeholder (never fabricated); identity_linking and
-                           # endpoint_reachability are flag-only, never auto-added/auto-filled
-      index.ts             # runArtifacts() orchestrator — today calls only the manifest
-                           # generator; sibling modules (feed_fix, jsonld, llms_txt, robots_patch,
-                           # content_rewrite) get added here later
+      types.ts             # Shared ArtifactType / ArtifactChangelog / ArtifactDraft / ArtifactContext
+                           # ({ manifest, feed, signals }) — adding a generator input never again
+                           # requires changing runArtifacts()'s signature, just this one context shape
+      manifestArtifact.ts  # Artifact #1 — pure generator for artifact_type='ucp_manifest'. Takes an
+                           # ArtifactContext, returns a draft (or null if nothing to fix). Preserves
+                           # all valid existing config (including a passing sub-capability catalog
+                           # shape, byte-for-byte); auto-fixes use real canonical values; the service
+                           # endpoint is an obvious placeholder (never fabricated); identity_linking
+                           # and endpoint_reachability are flag-only, never auto-added/auto-filled
+      feedArtifact.ts      # Artifact #2 — pure generator for artifact_type='feed_fix'. v1 scope:
+                           # exactly one fix — a Google Merchant supplemental feed adding
+                           # native_commerce=true for products currently missing it (references
+                           # products by id only, never authors titles/prices/availability).
+                           # Merchant-intent guardrail: opts in ALL missing products but always
+                           # flags a REVIEW-before-uploading warning in must_complete, the same
+                           # "don't silently claim a merchant-preference decision" lesson as
+                           # identity_linking. Everything else in Category 2 (consistency signals,
+                           # title/description, discovery attributes) is flag-only here
+      index.ts             # runArtifacts(ctx) orchestrator — calls the manifest + feed generators;
+                           # sibling modules (jsonld, llms_txt, robots_patch, content_rewrite) get
+                           # added here later, without touching this file's signature again
     supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle, signal
                            # insert (returns inserted rows for signal_key→id mapping;
                            # priority_score is DB-generated), pillar score insert, artifact insert
-                           # (resolves_signal_ids mapped from keys; changelog not yet persisted —
-                           # no column for it, printed only), site config reads, dev site bootstrap
+                           # (resolves_signal_ids mapped from keys; changelog_json persisted),
+                           # site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
                            # cross-check + LLM checks + policy/contact probes + payment readiness +
-                           # Merchant Center readiness checklist + manifest artifact generation →
-                           # signals → score → artifacts → Postgres
+                           # Merchant Center readiness checklist + artifact generation (manifest +
+                           # feed_fix, from a shared ArtifactContext) → signals → score → artifacts
+                           # → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
     test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/
                            # payment/readiness signal logic (mock LlmClient), known-shortcut fixes,
                            # httpFetcher (stubbed fetch)
-    test_artifacts.ts      # Manifest artifact generator: no-manifest scaffold, partial-manifest
-                           # preserve+correct (incl. byte-for-byte sub-capability preservation),
-                           # closed-loop validation against the real signal functions, purity
+    test_artifacts.ts      # Manifest generator: no-manifest scaffold, partial-manifest preserve+
+                           # correct (incl. byte-for-byte sub-capability preservation), closed-loop
+                           # validation against the real signal functions, purity. Feed generator:
+                           # full/partial supplemental feed, pass→null, no-feed defensive handling,
+                           # purity, consistency-signal flag-only. Plus an orchestrator integration
+                           # check that both generators wire into runArtifacts(ctx) together
 ```
 
 ## Architecture in one paragraph
@@ -180,10 +196,22 @@ live-verified against two real stores (skims.com, gymshark.com).**
       the merchant-specific endpoint, flags (never guesses) unmappable authority URLs and
       merchant-preference signals (identity_linking, endpoint_reachability). Live-verified on
       gymshark.com (no manifest → full starter scaffold, 7 signals resolved) and skims.com
-      (existing manifest → 0 changes needed structurally, 4 honest flags). 52 automated tests,
-      including a closed-loop check that re-running the real signal functions against the
-      generated manifest actually passes.
-- [ ] Remaining artifact types: `feed_fix`, `jsonld`, `llms_txt`, `robots_patch`, `content_rewrite`
+      (existing manifest → 0 changes needed structurally, 4 honest flags).
+- [x] Artifact generation, artifact #2 (`feed_fix`): a Google Merchant supplemental feed adding
+      `native_commerce=true` for products missing it. Never authors product data (titles/prices/
+      availability) — references products by id only. Opts in every product currently missing the
+      attribute but always flags a REVIEW-before-uploading warning (the identity_linking lesson
+      applied again: a merchant-eligibility decision is never silently made for them). All other
+      Category 2 signals (consistency checks, title/description, discovery attributes) are
+      flag-only in this generator — reconciling a feed/page mismatch is a merchant decision, not
+      an auto-fix. Live-verified on skims.com and gymshark.com: real 30-item feeds, real product
+      IDs in the generated supplemental feed, `changelog_json` and `resolves_signal_ids`
+      persisted correctly.
+- [x] Artifact system generalized for more generator types: shared `ArtifactContext` (`{ manifest,
+      feed, signals }`) so a third generator never requires changing `runArtifacts()`'s signature;
+      shared `ArtifactType`/`ArtifactChangelog`/`ArtifactDraft` in `artifacts/types.ts`;
+      `artifacts.changelog_json` persisted (was print-only before).
+- [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`, `content_rewrite`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
 - [ ] Onboarding UI (feed URL, identity-linking opt-out, and Category 6 attestations are all plain
@@ -222,11 +250,10 @@ live-verified against two real stores (skims.com, gymshark.com).**
   no reliable feed-side policy data to compare against yet — so
   `evidence_json.feed_match` is always `null`, not a fabricated `true`.
 
-- **Artifact changelogs aren't persisted yet.** `artifacts` has no changelog
-  column — `manifestArtifact.ts`'s `ArtifactChangelog` (added/corrected/
-  must_complete/flagged) is printed by `runLive.ts` but not written to the DB.
-  Add a `changelog JSONB` column when a dashboard needs to display it; not
-  blocking, since `resolves_signal_ids` already gives DB-level traceability.
+- ~~Artifact changelogs aren't persisted yet.~~ **Fixed 2026-07-06.** Added
+  `artifacts.changelog_json` (migration `20260706030000_add_artifacts_changelog_json.sql`);
+  `insertArtifacts` now writes each draft's `ArtifactChangelog` there instead of
+  only printing it.
 
 - **Found and fixed during live testing (2026-07-06):** the manifest artifact
   generator initially marked `ucp_namespace_authority_valid` as "resolved"
@@ -238,3 +265,15 @@ live-verified against two real stores (skims.com, gymshark.com).**
   signal was still claimed as resolved. Fixed to only mark it resolved when
   at least one URL was actually rewritten; added a regression test for the
   all-flagged/none-corrected case.
+
+- **`feed_fix`'s native_commerce artifact opts in every missing product by
+  default, not an empty template.** Deliberate: an empty per-product template
+  for a 30-item feed is the same manual labor as not having the tool, whereas
+  opt-in-with-review is a quick prune. `changelog.must_complete` always
+  carries a REVIEW warning so this is never presented as silently done — the
+  same guardrail as `identity_linking` in the manifest generator. Also: the
+  generated artifact is always a Google Merchant-format supplemental feed
+  regardless of whether the primary feed is Shopify JSON or Google XML
+  (`native_commerce` is a Merchant Center attribute, not a primary-feed
+  field) — for a Shopify-sourced feed, an extra changelog line notes the
+  Merchant Center → Products → Feeds upload path specifically.

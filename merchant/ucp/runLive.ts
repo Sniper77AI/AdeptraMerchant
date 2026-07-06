@@ -4,8 +4,9 @@
  * domain in → real /.well-known/ucp fetch (Category 1 + 3 + 4) + product feed
  * fetch + page cross-check + LLM checks (Category 2, if configured) + policy/
  * contact page probes (Category 5) + Merchant Center readiness checklist
- * (Category 6, self-attested — not scored into the % score) → scorer → rows
- * in analysis_runs / signals / pillar_scores.
+ * (Category 6, self-attested — not scored into the % score) → scorer →
+ * artifact generation (ucp_manifest + feed_fix, from the shared
+ * ArtifactContext) → rows in analysis_runs / signals / pillar_scores / artifacts.
  *
  * Usage:
  *   SUPABASE_URL=https://<ref>.supabase.co \
@@ -28,7 +29,7 @@ import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
 import { runPolicyChecks } from "./policyChecks.ts";
 import { runPaymentChecks } from "./paymentChecks.ts";
 import { runReadinessChecks } from "./readinessChecks.ts";
-import { runArtifacts } from "./artifacts/index.ts";
+import { runArtifacts, type ArtifactContext } from "./artifacts/index.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -118,7 +119,8 @@ try {
   const nPillars = await insertPillarScores(cfg, run.runId, pillars);
   const overall = overallScore(pillars);
 
-  const drafts = runArtifacts(manifest, signals);
+  const ctx: ArtifactContext = { manifest, feed, signals };
+  const drafts = runArtifacts(ctx);
   const insertedArtifacts = await insertArtifacts(cfg, run.runId, siteId, drafts, signalKeyToId);
 
   const noManifest = isManifestMissing(manifest);
@@ -140,9 +142,6 @@ try {
       console.log(`  must complete:`);
       for (const item of c.must_complete) console.log(`    - ${item}`);
     }
-    // TODO: artifacts table has no changelog column yet — printing only here.
-    // Add one (e.g. a changelog JSONB column) when the dashboard needs it.
-    console.log(`  changelog (not yet persisted): ${JSON.stringify(c)}`);
   }
   console.log(`run:   ${run.runId} (${noManifest ? "no_manifest" : `complete, overall ${overall}`})`);
 } catch (e) {

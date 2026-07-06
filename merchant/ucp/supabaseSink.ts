@@ -161,11 +161,9 @@ export interface InsertedArtifact {
 /** Inserts generated artifact drafts. resolves_signal_ids is built by mapping
  *  each draft's signal_keys through signalKeyToId (unmatched keys are dropped
  *  rather than inserting a bad UUID). deploy_status/is_exportable are set
- *  explicitly (draft / exportable) — created_at/updated_at are DB-managed and
- *  deliberately not sent, same discipline as signals.priority_score.
- *  TODO: the artifacts table has no changelog column yet — the caller prints
- *  it (runLive.ts) rather than persisting it. Add one (e.g. a changelog JSONB
- *  column) when the dashboard needs to display it; not blocking this feature. */
+ *  explicitly (draft / exportable); changelog_json stores the human-readable
+ *  added/corrected/must_complete/flagged summary. created_at/updated_at are
+ *  DB-managed and deliberately not sent, same discipline as signals.priority_score. */
 export async function insertArtifacts(
   cfg: SupabaseConfig,
   runId: string,
@@ -183,6 +181,7 @@ export async function insertArtifacts(
     resolves_signal_ids: d.resolves_signal_keys.map((k) => signalKeyToId.get(k)).filter((id): id is string => !!id),
     deploy_status: "draft",
     is_exportable: true,
+    changelog_json: d.changelog,
   }));
   return await rest<InsertedArtifact[]>(cfg, "POST", "/rest/v1/artifacts", rows);
 }
