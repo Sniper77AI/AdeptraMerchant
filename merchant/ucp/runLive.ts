@@ -25,6 +25,7 @@ import { runFeedChecks, extractFeedVariants } from "./feedChecks.ts";
 import { runPageConsistencyChecks } from "./pageChecks.ts";
 import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
 import { runPolicyChecks } from "./policyChecks.ts";
+import { runPaymentChecks } from "./paymentChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -90,7 +91,8 @@ try {
     console.log(`llm:   sampled up to 5 of ${feed.items.length} feed products for title/description + attribute-richness checks`);
   }
   const policySignals = await runPolicyChecks(site.rootUrl ?? `https://${domain}`, httpFetcher);
-  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals, ...llmSignals, ...policySignals];
+  const paymentSignals = runPaymentChecks(manifest);
+  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals, ...llmSignals, ...policySignals, ...paymentSignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);

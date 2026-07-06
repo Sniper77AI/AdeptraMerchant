@@ -40,6 +40,10 @@ merchant/
                            # / shipping_info_present_consistent (best-effort probe of known Shopify +
                            # custom-storefront path conventions — no general crawler yet) /
                            # support_contact_present (schema.org Organization.contactPoint)
+    paymentChecks.ts       # Category 4 (Payment / AP2 Readiness): ap2_compatibility_declared /
+                           # credential_security_posture read ucp.payment_handlers from the already-
+                           # fetched manifest (no new network call); merchant_of_record_declared is
+                           # always not_applicable — no UCP field exists yet to read it from
     httpFetcher.ts         # Production Fetcher: native fetch, shared 5s deadline, manual
                            # redirect tracking (chain in evidence), 401/403 → requiresAuth
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
@@ -47,10 +51,11 @@ merchant/
                            # signal insert (run_id stamped; priority_score is DB-generated),
                            # pillar score insert, site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
-                           # cross-check + LLM checks + policy/contact probes → signals → score → Postgres
+                           # cross-check + LLM checks + policy/contact probes + payment readiness
+                           # → signals → score → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
-    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy signal
-                           # logic (mock LlmClient), known-shortcut fixes, httpFetcher (stubbed fetch)
+    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/payment
+                           # signal logic (mock LlmClient), known-shortcut fixes, httpFetcher (stubbed fetch)
 ```
 
 ## Architecture in one paragraph
@@ -126,10 +131,17 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
       schema.org Organization.contactPoint; tested, live-verified — found real policy pages at
       different URLs per store, correctly failed shipping-info absence on gymshark.com, correctly
       flagged its Organization schema as present-but-unstructured contact info)
+- [x] Category 4 — Payment / AP2 Readiness, all 3 signals: `ap2_compatibility_declared`,
+      `credential_security_posture`, `merchant_of_record_declared` (reads `ucp.payment_handlers`
+      from the already-fetched manifest — no new network call; tested, live-verified against
+      skims.com's real payment_handlers block — correctly partial on AP2 explicitness, correctly
+      pass on tokenization_specification presence)
 - [x] Real HTTP fetcher + Supabase insert (unit-tested, live-verified against skims.com, gymshark.com)
 - [x] Scorer → `pillar_scores` (unit-tested, live-verified)
 - [x] First live end-to-end runs against real stores (skims.com, gymshark.com)
-- [ ] Category 4 (Payment/AP2 Readiness) & Category 6 (Merchant Center Eligibility readiness gate)
+- [ ] Category 6 (Merchant Center Eligibility readiness gate) — purely self-attested, needs an
+      onboarding attestation flag/UI (same pattern as `identity_linking_opt_out`, just for
+      account-readiness rather than a scoring opt-out)
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
 

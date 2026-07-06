@@ -51,6 +51,12 @@ import {
   type PagePresenceProbe,
   type HomepageState,
 } from "./policyChecks.ts";
+import {
+  runPaymentChecks,
+  sig_ap2_compatibility_declared,
+  sig_credential_security_posture,
+  sig_merchant_of_record_declared,
+} from "./paymentChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -804,7 +810,96 @@ function mockPathFetcher(okPaths: string[], body = ""): Fetcher {
 }
 
 // ---------------------------------------------------------------------------
-// 8. httpFetcher (stubbed globalThis.fetch)
+// 8. paymentChecks (Category 4: AP2 / payment readiness)
+// ---------------------------------------------------------------------------
+
+function manifestWithPaymentHandlers(paymentHandlers: any): ManifestState {
+  return {
+    url: "https://shop.example.com/.well-known/ucp",
+    reachable: true,
+    httpStatus: 200,
+    contentType: "application/json",
+    requiresAuth: false,
+    redirectChain: [],
+    isValidJson: true,
+    parsed: { ucp: { version: "2026-04-08", payment_handlers: paymentHandlers } },
+  };
+}
+
+const NO_MANIFEST: ManifestState = {
+  url: "https://shop.example.com/.well-known/ucp",
+  reachable: false,
+  httpStatus: null,
+  contentType: null,
+  requiresAuth: false,
+  redirectChain: [],
+  isValidJson: false,
+  parsed: null,
+};
+
+{
+  // Grounded against a real production manifest (skims.com): com.google.pay's
+  // config carries tokenization_specification under allowed_payment_methods.
+  const manifest = manifestWithPaymentHandlers({
+    "com.google.pay": [
+      {
+        config: {
+          allowed_payment_methods: [{ type: "CARD", tokenization_specification: { type: "PAYMENT_GATEWAY", parameters: { gateway: "shopify" } } }],
+        },
+      },
+    ],
+  });
+  const ap2 = sig_ap2_compatibility_declared(manifest);
+  const cred = sig_credential_security_posture(manifest);
+  check("ap2_compatibility_declared: partial when handler declared but AP2 not explicitly mentioned", ap2.status === "partial", ap2);
+  check("credential_security_posture: pass when tokenization_specification is present", cred.status === "pass", cred);
+}
+
+{
+  const manifest = manifestWithPaymentHandlers({ "dev.shopify.card": [{ config: { payment_methods: [{ type: "card" }] } }] });
+  const cred = sig_credential_security_posture(manifest);
+  check("credential_security_posture: partial when no tokenization_specification found", cred.status === "partial", cred);
+}
+
+{
+  const manifest = manifestWithPaymentHandlers({
+    "dev.ucp.common.ap2": [{ spec: "https://ucp.dev/specification/ap2" }],
+  });
+  const ap2 = sig_ap2_compatibility_declared(manifest);
+  check("ap2_compatibility_declared: pass when an AP2-hinting handler key/spec is present", ap2.status === "pass", ap2);
+}
+
+{
+  const noHandlers = manifestWithPaymentHandlers({});
+  const ap2 = sig_ap2_compatibility_declared(noHandlers);
+  const cred = sig_credential_security_posture(noHandlers);
+  check("ap2_compatibility_declared: fail when no payment handler declared", ap2.status === "fail", ap2);
+  check("credential_security_posture: not_applicable when no payment handler declared (nothing observable)", cred.status === "not_applicable", cred);
+}
+
+{
+  const ap2 = sig_ap2_compatibility_declared(NO_MANIFEST);
+  const cred = sig_credential_security_posture(NO_MANIFEST);
+  check("ap2_compatibility_declared: fail when there's no manifest at all", ap2.status === "fail", ap2);
+  check("credential_security_posture: not_applicable when there's no manifest at all", cred.status === "not_applicable", cred);
+}
+
+{
+  const mor = sig_merchant_of_record_declared();
+  check("merchant_of_record_declared: always not_applicable — no UCP field exists to read it from", mor.status === "not_applicable", mor);
+}
+
+{
+  const manifest = manifestWithPaymentHandlers({
+    "com.google.pay": [{ config: { allowed_payment_methods: [{ tokenization_specification: {} }] } }],
+  });
+  const signals = runPaymentChecks(manifest);
+  check("runPaymentChecks: returns all three signals", signals.length === 3, signals);
+  check("runPaymentChecks: every signal is category payment_ap2_readiness", signals.every((s) => s.category === "payment_ap2_readiness"), signals);
+}
+
+// ---------------------------------------------------------------------------
+// 9. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {
