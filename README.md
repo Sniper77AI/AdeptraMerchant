@@ -23,19 +23,24 @@ merchant/
     manifestChecks.ts      # Category 1 (Discovery & Manifest) checks — portable, framework-agnostic
     capabilityChecks.ts    # Category 3 (Capabilities) checks — checkout/cart/catalog/fulfillment/
                            # identity_linking declarations + endpoint_reachability probe
-    feedChecks.ts          # Category 2 (Product Data Hygiene), slice 1: feed_available +
-                           # native_commerce_attribute. Parses Shopify products.json and Google
-                           # Merchant XML/RSS feeds (zero-dependency, regex-based XML reading)
+    feedChecks.ts          # Category 2 (Product Data Hygiene): feed_available + native_commerce_attribute
+                           # (product-level), plus extractFeedVariants (variant-level view feeding
+                           # pageChecks.ts). Parses Shopify products.json and Google Merchant XML/RSS
+                           # (zero-dependency, regex-based XML reading)
+    pageChecks.ts          # Category 2 cross-surface consistency: product_id_consistency /
+                           # price_consistency_cross_surface / availability_consistency. Samples feed
+                           # variants, fetches each product page once (de-duped), extracts schema.org
+                           # JSON-LD (Product or ProductGroup→hasVariant), matches by mpn/sku/gtin
     httpFetcher.ts         # Production Fetcher: native fetch, shared 5s deadline, manual
                            # redirect tracking (chain in evidence), 401/403 → requiresAuth
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
     supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle,
                            # signal insert (run_id stamped; priority_score is DB-generated),
                            # pillar score insert, site config reads, dev site bootstrap
-    runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed fetch →
-                           # signals → score → Postgres
-    test.ts                # Mock-driven demo harness for all three signal groups
-    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed signal logic,
+    runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
+                           # cross-check → signals → score → Postgres
+    test.ts                # Mock-driven demo harness for all signal groups
+    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page signal logic,
                            # known-shortcut fixes, httpFetcher (stubbed global fetch)
 ```
 
@@ -98,15 +103,15 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
 - [x] UCP compliance signal specs (v1)
 - [x] Category 1 — Discovery & Manifest checks (tested against mocks, live-verified)
 - [x] Category 3 — Capabilities checks (tested against mocks, live-verified)
-- [x] Category 2 — Product Data Hygiene, slice 1: `feed_available` + `native_commerce_attribute`
-      (Shopify `products.json` + Google Merchant XML parsing; tested, live-verified)
+- [x] Category 2 — Product Data Hygiene: `feed_available`, `native_commerce_attribute`,
+      `product_id_consistency`, `price_consistency_cross_surface`, `availability_consistency`
+      (Shopify `products.json` + Google Merchant XML parsing, JSON-LD page cross-referencing;
+      tested, live-verified — matched real SKUs/prices/availability across 15 live product pages)
 - [x] Real HTTP fetcher + Supabase insert (unit-tested, live-verified against skims.com, gymshark.com)
 - [x] Scorer → `pillar_scores` (unit-tested, live-verified)
 - [x] First live end-to-end runs against real stores (skims.com, gymshark.com)
-- [ ] Category 2 remainder: `product_id_consistency` / `price_consistency_cross_surface` /
-      `availability_consistency` (need page-fetch + JSON-LD extraction to cross-reference against
-      the feed) and the two LLM-scored signals (`title_description_consistency`'s semantic half,
-      `discovery_attributes_enrichment`) — need an LLM provider/API key decision
+- [ ] Category 2 remainder: the two LLM-scored signals (`title_description_consistency`'s semantic
+      half, `discovery_attributes_enrichment`) — need an LLM provider/API key decision
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
 

@@ -1,12 +1,13 @@
 /**
  * Adeptra Merchant — Product Feed Check Group (Category 2: Product Data Hygiene)
  *
- * SCOPE OF THIS SLICE: `feed_available` (the gate) and `native_commerce_attribute`
- * (feed-only, deterministic). The remaining Category 2 signals — product_id /
- * price / availability cross-surface consistency — need page-fetching + JSON-LD
- * extraction to compare against; title_description_consistency and
- * discovery_attributes_enrichment need an LLM. Both are follow-up slices, not
- * yet wired here. Nothing below claims to score them.
+ * SCOPE OF THIS FILE: feed fetching/parsing, plus `feed_available` and
+ * `native_commerce_attribute` (feed-only, deterministic). `extractFeedVariants`
+ * also lives here (it's a pure view over the same FeedState) but the signals
+ * that consume it — product_id / price / availability cross-surface
+ * consistency — live in pageChecks.ts, since they need page-fetching + JSON-LD
+ * extraction too. title_description_consistency and discovery_attributes_enrichment
+ * need an LLM and aren't wired anywhere yet.
  *
  * PORTABILITY CONTRACT (same shape as manifestChecks.ts):
  *  - `fetchFeed` is the only function that touches the network, via the same
@@ -116,6 +117,53 @@ export function parseGoogleMerchantFeed(xml: string): FeedItem[] {
       raw: { id, price: priceRaw, availability: availabilityRaw, native_commerce: xmlTag(block, "native_commerce") },
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Variant-level view (for cross-surface consistency checks in pageChecks.ts)
+//
+// feed_available / native_commerce_attribute operate at product granularity
+// (one FeedItem per product, as shipped). The consistency checks need
+// variant granularity instead — a merchant's checkout/page-level SKU is
+// per-variant (size/color), not per-product. This derives variant rows from
+// the same FeedState without touching the product-level shape above.
+// ---------------------------------------------------------------------------
+
+export interface FeedVariant {
+  sku: string;
+  productTitle: string | null;
+  price: number | null;
+  currency: string | null;
+  available: boolean | null;
+  link: string | null; // product page URL — shared across a product's variants
+}
+
+export function extractFeedVariants(feed: FeedState): FeedVariant[] {
+  if (feed.format === "shopify_json") {
+    const out: FeedVariant[] = [];
+    for (const item of feed.items) {
+      const product = item.raw;
+      const variants: any[] = Array.isArray(product?.variants) ? product.variants : [];
+      for (const v of variants) {
+        if (!v?.sku) continue;
+        out.push({
+          sku: String(v.sku),
+          productTitle: product?.title ?? null,
+          price: v.price != null ? Number(v.price) : null,
+          currency: null,
+          available: v.available === true,
+          link: item.link,
+        });
+      }
+    }
+    return out;
+  }
+  if (feed.format === "google_xml") {
+    return feed.items
+      .filter((it) => !!it.id)
+      .map((it) => ({ sku: it.id, productTitle: it.title, price: it.price, currency: it.currency, available: it.available, link: it.link }));
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------

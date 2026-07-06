@@ -19,7 +19,8 @@
 
 import { runManifestChecks, isManifestMissing } from "./manifestChecks.ts";
 import { runCapabilityChecks } from "./capabilityChecks.ts";
-import { runFeedChecks } from "./feedChecks.ts";
+import { runFeedChecks, extractFeedVariants } from "./feedChecks.ts";
+import { runPageConsistencyChecks } from "./pageChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -68,7 +69,12 @@ try {
   if (feed) {
     console.log(`feed:  ${feed.url} → ${feed.httpStatus ?? "unreachable"} (${feed.format}, ${feed.items.length} items)${feed.errorNote ? ` (${feed.errorNote})` : ""}`);
   }
-  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals];
+  const feedVariants = feed ? extractFeedVariants(feed) : [];
+  const pageSignals = await runPageConsistencyChecks(feedVariants, httpFetcher);
+  if (feedVariants.length > 0) {
+    console.log(`pages: sampled up to 15 of ${feedVariants.length} feed variants for id/price/availability cross-check`);
+  }
+  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);

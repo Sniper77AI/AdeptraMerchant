@@ -19,10 +19,21 @@ import {
   fetchFeed,
   parseShopifyFeed,
   parseGoogleMerchantFeed,
+  extractFeedVariants,
   sig_feed_available,
   sig_native_commerce_attribute,
   type FeedState,
+  type FeedVariant,
 } from "./feedChecks.ts";
+import {
+  runPageConsistencyChecks,
+  fetchProductPage,
+  extractVariants,
+  sampleAndCompare,
+  sig_product_id_consistency,
+  sig_price_consistency,
+  sig_availability_consistency,
+} from "./pageChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -353,7 +364,178 @@ const GOOGLE_FEED_BODY = `<?xml version="1.0"?>
 }
 
 // ---------------------------------------------------------------------------
-// 5. httpFetcher (stubbed globalThis.fetch)
+// 5. pageChecks (Category 2 cross-surface consistency: id/price/availability)
+// ---------------------------------------------------------------------------
+
+// Grounded against a real Skims product page's JSON-LD (ProductGroup -> hasVariant,
+// each variant's `mpn` matching the feed's variant `sku`).
+const PRODUCT_GROUP_JSONLD = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "ProductGroup",
+  productGroupID: "WID-1",
+  hasVariant: [
+    {
+      "@type": "Product",
+      name: "Widget Small",
+      mpn: "W-1",
+      offers: { "@type": "Offer", price: 19.99, priceCurrency: "USD", availability: "https://schema.org/InStock" },
+    },
+    {
+      "@type": "Product",
+      name: "Widget Large",
+      mpn: "W-2",
+      offers: { "@type": "Offer", price: 24.99, priceCurrency: "USD", availability: "https://schema.org/OutOfStock" },
+    },
+  ],
+});
+
+function htmlWithJsonLd(json: string): string {
+  return `<html><head><script type="application/ld+json">${json}</script></head><body></body></html>`;
+}
+
+const FEED_VARIANTS: FeedVariant[] = [
+  { sku: "W-1", productTitle: "Widget", price: 19.99, currency: null, available: true, link: "https://shop.example.com/products/widget" },
+  { sku: "W-2", productTitle: "Widget", price: 24.99, currency: null, available: false, link: "https://shop.example.com/products/widget" },
+];
+
+{
+  const blocks = [JSON.parse(PRODUCT_GROUP_JSONLD)];
+  const variants = extractVariants(blocks);
+  check("extractVariants: ProductGroup -> hasVariant flattened", variants.length === 2, variants);
+  check("extractVariants: sku read from mpn", variants[0].sku === "W-1", variants[0]);
+  check("extractVariants: price/currency from offers", variants[0].price === 19.99 && variants[0].currency === "USD", variants[0]);
+  check("extractVariants: InStock -> available true", variants[0].available === true, variants[0]);
+  check("extractVariants: OutOfStock -> available false", variants[1].available === false, variants[1]);
+}
+
+{
+  const bareProduct = { "@type": "Product", mpn: "SOLO-1", offers: { price: 9.99, priceCurrency: "USD", availability: "https://schema.org/InStock" } };
+  const variants = extractVariants([bareProduct]);
+  check("extractVariants: bare Product (no group) treated as one variant", variants.length === 1 && variants[0].sku === "SOLO-1", variants);
+}
+
+{
+  const graphWrapped = { "@graph": [{ "@type": "BreadcrumbList" }, JSON.parse(PRODUCT_GROUP_JSONLD)] };
+  const variants = extractVariants([graphWrapped]);
+  check("extractVariants: @graph wrapping unwrapped, non-product nodes ignored", variants.length === 2, variants);
+}
+
+{
+  const mockPage: Fetcher = async () => ({
+    status: 200,
+    headers: { "content-type": "text/html" },
+    body: htmlWithJsonLd(PRODUCT_GROUP_JSONLD),
+    redirectChain: [],
+    requiresAuth: false,
+  });
+  const page = await fetchProductPage("https://shop.example.com/products/widget", mockPage);
+  check("fetchProductPage: extracts variants from a real page shape", page.variants.length === 2, page);
+
+  let fetchCount = 0;
+  const countingFetcher: Fetcher = async () => {
+    fetchCount++;
+    return { status: 200, headers: {}, body: htmlWithJsonLd(PRODUCT_GROUP_JSONLD), redirectChain: [], requiresAuth: false };
+  };
+  const comparisons = await sampleAndCompare(FEED_VARIANTS, countingFetcher);
+  check("sampleAndCompare: both variants matched by sku", comparisons.every((c) => c.pageFound), comparisons);
+  check("sampleAndCompare: shared product link fetched once, not twice (de-duped)", fetchCount === 1, { fetchCount });
+
+  const idSignal = sig_product_id_consistency(comparisons);
+  const priceSignal = sig_price_consistency(comparisons);
+  const availSignal = sig_availability_consistency(comparisons);
+  check("product_id_consistency: pass when every sku matches", idSignal.status === "pass", idSignal);
+  check("price_consistency: pass when feed and page prices match", priceSignal.status === "pass", priceSignal);
+  check("availability_consistency: pass when feed and page agree (incl. the out-of-stock one)", availSignal.status === "pass", availSignal);
+}
+
+{
+  // Page price disagrees with the feed for one of two variants -> mismatch_rate 0.5 -> fail (>= 20%).
+  const mismatchedPageJsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "ProductGroup",
+    hasVariant: [
+      { "@type": "Product", mpn: "W-1", offers: { price: 999, priceCurrency: "USD", availability: "https://schema.org/InStock" } },
+      { "@type": "Product", mpn: "W-2", offers: { price: 24.99, priceCurrency: "USD", availability: "https://schema.org/OutOfStock" } },
+    ],
+  });
+  const mockMismatched: Fetcher = async () => ({
+    status: 200,
+    headers: {},
+    body: htmlWithJsonLd(mismatchedPageJsonLd),
+    redirectChain: [],
+    requiresAuth: false,
+  });
+  const comparisons = await sampleAndCompare(FEED_VARIANTS, mockMismatched);
+  const priceSignal = sig_price_consistency(comparisons);
+  check("price_consistency: fail when mismatch_rate >= 20%", priceSignal.status === "fail", priceSignal);
+}
+
+{
+  // sku not present on the page at all.
+  const noMatchFetcher: Fetcher = async () => ({
+    status: 200,
+    headers: {},
+    body: htmlWithJsonLd(JSON.stringify({ "@type": "Product", mpn: "SOMETHING-ELSE", offers: { price: 1, availability: "https://schema.org/InStock" } })),
+    redirectChain: [],
+    requiresAuth: false,
+  });
+  const comparisons = await sampleAndCompare(FEED_VARIANTS, noMatchFetcher);
+  check("sampleAndCompare: pageFound false when no sku matches", comparisons.every((c) => !c.pageFound), comparisons);
+  const idSignal = sig_product_id_consistency(comparisons);
+  check("product_id_consistency: fail when no sampled sku is found on its page", idSignal.status === "fail", idSignal);
+  // price/availability can't be judged for unmatched skus -> not_applicable, not a false fail.
+  check("price_consistency: not_applicable when nothing could be matched", sig_price_consistency(comparisons).status === "not_applicable");
+  check("availability_consistency: not_applicable when nothing could be matched", sig_availability_consistency(comparisons).status === "not_applicable");
+}
+
+{
+  const mockUnreachable: Fetcher = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  const comparisons = await sampleAndCompare(FEED_VARIANTS, mockUnreachable);
+  check("sampleAndCompare: fetchError recorded when the page is unreachable", comparisons.every((c) => !!c.fetchError), comparisons);
+  check("product_id_consistency: not_applicable when every sampled page failed to fetch", sig_product_id_consistency(comparisons).status === "not_applicable", comparisons);
+}
+
+{
+  check("product_id_consistency: not_applicable with no comparisons at all", sig_product_id_consistency(null).status === "not_applicable");
+  check("price_consistency: not_applicable with no comparisons at all", sig_price_consistency(null).status === "not_applicable");
+  check("availability_consistency: not_applicable with no comparisons at all", sig_availability_consistency(null).status === "not_applicable");
+}
+
+{
+  // End-to-end orchestrator, and extractFeedVariants over a real FeedState shape.
+  const shopifyProducts = [
+    { id: 1, handle: "widget", title: "Widget", variants: [{ sku: "W-1", price: "19.99", available: true }, { sku: "W-2", price: "24.99", available: false }] },
+  ];
+  const feed: FeedState = {
+    url: "https://shop.example.com/products.json",
+    reachable: true,
+    httpStatus: 200,
+    contentType: "application/json",
+    format: "shopify_json",
+    items: parseShopifyFeed(shopifyProducts, "https://shop.example.com"),
+  };
+  const variants = extractFeedVariants(feed);
+  check("extractFeedVariants: one row per Shopify variant, not per product", variants.length === 2, variants);
+
+  const goodPageFetcher: Fetcher = async () => ({
+    status: 200,
+    headers: {},
+    body: htmlWithJsonLd(PRODUCT_GROUP_JSONLD),
+    redirectChain: [],
+    requiresAuth: false,
+  });
+  const signals = await runPageConsistencyChecks(variants, goodPageFetcher);
+  check("runPageConsistencyChecks: returns all three signals", signals.length === 3, signals);
+  check("runPageConsistencyChecks: all pass end-to-end", signals.every((s) => s.status === "pass"), signals);
+
+  const noVariantsSignals = await runPageConsistencyChecks([], goodPageFetcher);
+  check("runPageConsistencyChecks: not_applicable across the board with no feed variants", noVariantsSignals.every((s) => s.status === "not_applicable"), noVariantsSignals);
+}
+
+// ---------------------------------------------------------------------------
+// 6. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {
