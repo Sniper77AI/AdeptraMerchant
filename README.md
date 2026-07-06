@@ -18,7 +18,15 @@ merchant/
     signal-specs.md        # The core IP: exact pass/partial/fail rule + evidence + fix
                            # for every UCP compliance signal, grounded in UCP 2026-04-08
     manifestChecks.ts      # Category-1 (Discovery & Manifest) checks — portable, framework-agnostic
-    test.ts                # Mock-driven test harness for the manifest checks
+    httpFetcher.ts         # Production Fetcher: native fetch, shared 5s deadline, manual
+                           # redirect tracking (chain in evidence), 401/403 → requiresAuth
+    scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
+    supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle,
+                           # signal insert (run_id stamped; priority_score is DB-generated),
+                           # pillar score insert, dev site bootstrap
+    runLive.ts             # End-to-end CLI: domain → live fetch → signals → score → Postgres
+    test.ts                # Mock-driven harness for the manifest checks
+    test_live_pipeline.ts  # Tests for scorer math + httpFetcher (stubbed global fetch)
 ```
 
 ## Architecture in one paragraph
@@ -34,28 +42,49 @@ A merchant enters a store URL. A deterministic-first pipeline crawls a sampled s
 - **Honest boundaries.** External gates (Merchant Center eligibility, live payment handler, Google
   approval) are scored as readiness checks and shown as "prerequisite you must complete," never
   "done for you."
-- **Portable logic.** Signal checks are pure functions with an injectable fetcher, so they run in an
-  n8n code node today and lift into a standalone worker later, unchanged.
+- **Portable logic.** Signal checks are pure functions with an injectable fetcher, and the Supabase
+  sink talks raw PostgREST over `fetch` (no SDK), so everything runs in an n8n code node today and
+  lifts into a standalone worker later, unchanged.
 
-## Running the manifest checks (mock)
+## Running
 
 Requires Node 22+ (native TypeScript type-stripping).
+
+**Mock harness** (four scenarios: compliant / present-but-flawed / missing / auth-walled):
 
 ```bash
 cd merchant/ucp
 node --experimental-strip-types test.ts
 ```
 
-This runs four mock scenarios (compliant / present-but-flawed / missing / auth-walled) and prints
-each signal's status, priority score, and fix summary.
+**Pipeline tests** (scorer math + real fetcher behavior against a stubbed `fetch`):
+
+```bash
+node --experimental-strip-types test_live_pipeline.ts
+```
+
+**Live end-to-end run** (real store → rows in `analysis_runs` / `signals` / `pillar_scores`):
+
+```bash
+SUPABASE_URL=https://<project-ref>.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=... \
+node --experimental-strip-types runLive.ts shop.example.com
+```
+
+If no `site_id` is passed, a dev client + site row are created/reused for the domain. A failed
+pipeline marks the run `failed` with `error_detail` — no zombie `running` rows.
+
+> Note: `signals.priority_score` is a `GENERATED ALWAYS` column — the DB computes
+> `impact × weight ÷ effort` itself. The sink deliberately does not send it.
 
 ## Status
 
 - [x] Database schema (deployed to Supabase)
 - [x] UCP compliance signal specs (v1)
 - [x] Category 1 — Discovery & Manifest checks (tested against mocks)
-- [ ] Real HTTP fetcher + Supabase insert (make it live)
-- [ ] Scorer → `pillar_scores`
+- [x] Real HTTP fetcher + Supabase insert (code complete, unit-tested; first live-store run pending)
+- [x] Scorer → `pillar_scores` (code complete, unit-tested)
+- [ ] First live end-to-end run against a real store (validation)
 - [ ] Category 2 (feed consistency, Google + Shopify adapters) & Category 3 (capabilities)
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
