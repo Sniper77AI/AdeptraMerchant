@@ -2,12 +2,13 @@
  * Adeptra Merchant — Live end-to-end run.
  *
  * domain in → real /.well-known/ucp fetch (Category 1 + 3) + product feed
- * fetch (Category 2, if configured) → scorer → rows in analysis_runs /
- * signals / pillar_scores.
+ * fetch + page cross-check + LLM checks (Category 2, if configured) → scorer
+ * → rows in analysis_runs / signals / pillar_scores.
  *
  * Usage:
  *   SUPABASE_URL=https://<ref>.supabase.co \
  *   SUPABASE_SERVICE_ROLE_KEY=... \
+ *   OPENAI_API_KEY=...  (optional — enables the 2 LLM-scored signals) \
  *   node --experimental-strip-types runLive.ts <domain> [site_id]
  *
  * If site_id is omitted, a dev client ("Adeptra Dev") + site row for the domain
@@ -21,6 +22,7 @@ import { runManifestChecks, isManifestMissing } from "./manifestChecks.ts";
 import { runCapabilityChecks } from "./capabilityChecks.ts";
 import { runFeedChecks, extractFeedVariants } from "./feedChecks.ts";
 import { runPageConsistencyChecks } from "./pageChecks.ts";
+import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -50,6 +52,11 @@ if (!cfg.url || !cfg.serviceRoleKey) {
   process.exit(1);
 }
 
+// Optional: title_description_consistency / discovery_attributes_enrichment
+// degrade to not_applicable (not fail) when this isn't set.
+const openAiKey = process.env.OPENAI_API_KEY;
+const llm: LlmClient | null = openAiKey ? openAiClient(openAiKey) : null;
+
 const siteId = siteIdArg ?? (await ensureDevSite(cfg, { clientName: "Adeptra Dev", domain }));
 console.log(`site:  ${siteId}`);
 
@@ -74,7 +81,13 @@ try {
   if (feedVariants.length > 0) {
     console.log(`pages: sampled up to 15 of ${feedVariants.length} feed variants for id/price/availability cross-check`);
   }
-  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals];
+  const llmSignals = await runLlmChecks(feed, httpFetcher, llm);
+  if (!llm) {
+    console.log("llm:   OPENAI_API_KEY not set — title_description_consistency / discovery_attributes_enrichment skipped (not_applicable)");
+  } else if (feed && feed.items.length > 0) {
+    console.log(`llm:   sampled up to 5 of ${feed.items.length} feed products for title/description + attribute-richness checks`);
+  }
+  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals, ...llmSignals];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);

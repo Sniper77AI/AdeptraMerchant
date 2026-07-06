@@ -58,6 +58,8 @@ export interface ProductPageState {
   reachable: boolean;
   httpStatus: number | null;
   variants: PageVariant[];
+  productDescription: string | null; // product/group-level description (llmChecks.ts)
+  productAttributes: Record<string, unknown> | null; // extra structured fields beyond price/availability/sku (llmChecks.ts)
   errorNote?: string;
 }
 
@@ -108,17 +110,20 @@ function toPageVariant(p: any): PageVariant {
   };
 }
 
-/** A bare Product is one variant; a ProductGroup contributes each of its
- *  hasVariant entries. Handles @graph wrapping. */
-export function extractVariants(blocks: any[]): PageVariant[] {
+function flattenNodes(blocks: any[]): any[] {
   const nodes: any[] = [];
   for (const block of blocks) {
     if (Array.isArray(block?.["@graph"])) nodes.push(...block["@graph"]);
     else nodes.push(block);
   }
+  return nodes;
+}
 
+/** A bare Product is one variant; a ProductGroup contributes each of its
+ *  hasVariant entries. Handles @graph wrapping. */
+export function extractVariants(blocks: any[]): PageVariant[] {
   const variants: PageVariant[] = [];
-  for (const node of nodes) {
+  for (const node of flattenNodes(blocks)) {
     const types = typesOf(node);
     if (types.includes("ProductGroup") && Array.isArray(node.hasVariant)) {
       for (const v of node.hasVariant) variants.push(toPageVariant(v));
@@ -129,12 +134,26 @@ export function extractVariants(blocks: any[]): PageVariant[] {
   return variants;
 }
 
+/** Product/group-level description and extra structured attributes (for
+ *  llmChecks.ts) — fields that live on the ProductGroup/Product node itself,
+ *  not per-variant (a real page's hasVariant entries don't carry description). */
+function extractProductLevel(blocks: any[]): { description: string | null; attributes: Record<string, unknown> | null } {
+  for (const node of flattenNodes(blocks)) {
+    const types = typesOf(node);
+    if (types.includes("ProductGroup") || types.includes("Product")) {
+      const { hasVariant, offers, "@context": _context, "@type": _type, ...rest } = node ?? {};
+      return { description: node?.description ?? null, attributes: rest };
+    }
+  }
+  return { description: null, attributes: null };
+}
+
 // ---------------------------------------------------------------------------
 // Network boundary (the only impure function)
 // ---------------------------------------------------------------------------
 
 export async function fetchProductPage(url: string, fetcher: Fetcher): Promise<ProductPageState> {
-  const base: ProductPageState = { url, reachable: false, httpStatus: null, variants: [] };
+  const base: ProductPageState = { url, reachable: false, httpStatus: null, variants: [], productDescription: null, productAttributes: null };
   let res: Awaited<ReturnType<Fetcher>>;
   try {
     res = await fetcher(url, PAGE_FETCH_TIMEOUT_MS);
@@ -145,7 +164,16 @@ export async function fetchProductPage(url: string, fetcher: Fetcher): Promise<P
     return { ...base, reachable: true, httpStatus: res.status, errorNote: `http_${res.status}` };
   }
   try {
-    return { url, reachable: true, httpStatus: res.status, variants: extractVariants(jsonLdBlocks(res.body)) };
+    const blocks = jsonLdBlocks(res.body);
+    const { description, attributes } = extractProductLevel(blocks);
+    return {
+      url,
+      reachable: true,
+      httpStatus: res.status,
+      variants: extractVariants(blocks),
+      productDescription: description,
+      productAttributes: attributes,
+    };
   } catch (e) {
     return { ...base, reachable: true, httpStatus: res.status, errorNote: `extract_failed: ${(e as Error).message}` };
   }

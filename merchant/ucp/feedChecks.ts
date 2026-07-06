@@ -50,11 +50,16 @@ function contribution(weight: number, status: SignalRow["status"]): number {
 export interface FeedItem {
   id: string;
   title: string | null;
+  description: string | null; // plain text, HTML tags stripped where the source is HTML
   price: number | null;
   currency: string | null;
   available: boolean | null;
   link: string | null; // product page URL, when derivable
   raw: any; // original item — used for less-common attribute checks (e.g. native_commerce)
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export type FeedFormat = "shopify_json" | "google_xml" | "unknown";
@@ -82,6 +87,7 @@ export function parseShopifyFeed(products: any[], rootUrl?: string): FeedItem[] 
     return {
       id: String(p?.id ?? primary?.sku ?? p?.handle ?? ""),
       title: p?.title ?? null,
+      description: typeof p?.body_html === "string" && p.body_html.trim() ? stripHtml(p.body_html) : null,
       price: primary?.price != null ? Number(primary.price) : null,
       currency: null, // products.json doesn't carry currency; it's a store-level setting
       available: variants.length > 0 ? anyAvailable : null,
@@ -110,6 +116,7 @@ export function parseGoogleMerchantFeed(xml: string): FeedItem[] {
     return {
       id: id ?? "",
       title: xmlTag(block, "title"),
+      description: xmlTag(block, "description"),
       price: priceNum ? Number(priceNum) : null,
       currency: currency ?? null,
       available: availabilityRaw ? /in[\s_]?stock/i.test(availabilityRaw) : null,

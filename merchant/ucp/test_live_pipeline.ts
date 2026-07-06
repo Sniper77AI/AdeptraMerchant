@@ -34,6 +34,14 @@ import {
   sig_price_consistency,
   sig_availability_consistency,
 } from "./pageChecks.ts";
+import {
+  runLlmChecks,
+  sig_title_description_consistency,
+  sig_discovery_attributes_enrichment,
+  type LlmClient,
+  type TitleDescSample,
+  type EnrichmentSample,
+} from "./llmChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -535,7 +543,170 @@ const FEED_VARIANTS: FeedVariant[] = [
 }
 
 // ---------------------------------------------------------------------------
-// 6. httpFetcher (stubbed globalThis.fetch)
+// 6. llmChecks (Category 2: title_description_consistency + discovery_attributes_enrichment)
+// ---------------------------------------------------------------------------
+
+function mockLlm(responses: string[]): { client: LlmClient; calls: string[] } {
+  let i = 0;
+  const calls: string[] = [];
+  const client: LlmClient = async (prompt: string) => {
+    calls.push(prompt);
+    return responses[Math.min(i++, responses.length - 1)];
+  };
+  return { client, calls };
+}
+
+{
+  const identicalSample: TitleDescSample = {
+    sku: "W-1",
+    feedTitle: "Widget",
+    feedDescription: "A great widget.",
+    pageTitle: "Widget",
+    pageDescription: "A great widget.",
+  };
+  const { client, calls } = mockLlm([]); // should never be called
+  const signal = await sig_title_description_consistency([identicalSample], client);
+  check("title_description_consistency: pass without calling the LLM when identical", signal.status === "pass" && calls.length === 0, { signal, calls });
+}
+
+{
+  const cosmeticSample: TitleDescSample = {
+    sku: "W-1",
+    feedTitle: "Widget",
+    feedDescription: "A great widget.",
+    pageTitle: "The Widget",
+    pageDescription: "A truly great widget!",
+  };
+  const { client, calls } = mockLlm([JSON.stringify({ contradiction: false, note: "cosmetic wording only" })]);
+  const signal = await sig_title_description_consistency([cosmeticSample], client);
+  check("title_description_consistency: partial when LLM finds no contradiction on a wording diff", signal.status === "partial" && calls.length === 1, signal);
+}
+
+{
+  const contradictorySample: TitleDescSample = {
+    sku: "W-1",
+    feedTitle: "Waterproof Jacket",
+    feedDescription: "Fully waterproof.",
+    pageTitle: "Water-Resistant Jacket",
+    pageDescription: "Water-resistant, not waterproof.",
+  };
+  const { client } = mockLlm([JSON.stringify({ contradiction: true, note: "waterproof vs water-resistant" })]);
+  const signal = await sig_title_description_consistency([contradictorySample], client);
+  check("title_description_consistency: fail when LLM finds a contradiction", signal.status === "fail", signal);
+}
+
+{
+  const sample: TitleDescSample = { sku: "W-1", feedTitle: "A", feedDescription: null, pageTitle: "B", pageDescription: null };
+  const brokenClient: LlmClient = async () => "not json";
+  const signal = await sig_title_description_consistency([sample], brokenClient);
+  check("title_description_consistency: malformed LLM response recorded as llm_error, not a crash", (signal.evidence_json as any).sampled[0].note.startsWith("llm_error"), signal);
+}
+
+{
+  const signal = await sig_title_description_consistency([], async () => "{}");
+  check("title_description_consistency: not_applicable with no samples", signal.status === "not_applicable", signal);
+}
+
+{
+  const richSample: EnrichmentSample = { sku: "W-1", productType: "Jacket", attributeKeys: ["material", "care", "fit", "reviews"] };
+  const { client } = mockLlm([JSON.stringify({ coverage: "rich", missing: [] })]);
+  const signal = await sig_discovery_attributes_enrichment([richSample], client);
+  check("discovery_attributes_enrichment: pass when every sample is rich", signal.status === "pass", signal);
+}
+
+{
+  const sparseSample: EnrichmentSample = { sku: "W-1", productType: "Jacket", attributeKeys: [] };
+  const { client } = mockLlm([JSON.stringify({ coverage: "sparse", missing: ["material", "care", "fit"] })]);
+  const signal = await sig_discovery_attributes_enrichment([sparseSample], client);
+  check("discovery_attributes_enrichment: fail when every sample is sparse", signal.status === "fail", signal);
+  check(
+    "discovery_attributes_enrichment: missing_attribute_types collected in evidence",
+    (signal.evidence_json as any).missing_attribute_types.includes("material"),
+    signal,
+  );
+}
+
+{
+  const samples: EnrichmentSample[] = [
+    { sku: "W-1", productType: "Jacket", attributeKeys: ["material"] },
+    { sku: "W-2", productType: "Jacket", attributeKeys: [] },
+  ];
+  const { client } = mockLlm([JSON.stringify({ coverage: "rich", missing: [] }), JSON.stringify({ coverage: "sparse", missing: ["care"] })]);
+  const signal = await sig_discovery_attributes_enrichment(samples, client);
+  check("discovery_attributes_enrichment: partial on a mixed rich/sparse sample", signal.status === "partial", signal);
+}
+
+{
+  const signal = await sig_discovery_attributes_enrichment([], async () => "{}");
+  check("discovery_attributes_enrichment: not_applicable with no samples", signal.status === "not_applicable", signal);
+}
+
+{
+  // runLlmChecks orchestrator: no llm configured -> both not_applicable, fetcher/llm never called.
+  let fetcherCalled = false;
+  const shouldNotBeCalledFetcher: Fetcher = async () => {
+    fetcherCalled = true;
+    return { status: 200, headers: {}, body: "", redirectChain: [], requiresAuth: false };
+  };
+  const feed: FeedState = {
+    url: "https://shop.example.com/products.json",
+    reachable: true,
+    httpStatus: 200,
+    contentType: "application/json",
+    format: "shopify_json",
+    items: [{ id: "1", title: "Widget", description: "d", price: 1, currency: null, available: true, link: "https://shop.example.com/products/widget", raw: {} }],
+  };
+  const signals = await runLlmChecks(feed, shouldNotBeCalledFetcher, null);
+  check("runLlmChecks: not_applicable for both signals when llm is null", signals.every((s) => s.status === "not_applicable"), signals);
+  check("runLlmChecks: page fetcher never called when llm is null", fetcherCalled === false);
+  check(
+    "runLlmChecks: llm_not_configured recorded in evidence",
+    signals.every((s) => (s.evidence_json as any).reason === "llm_not_configured"),
+    signals,
+  );
+}
+
+{
+  // End-to-end with a real page fetch + mock LLM.
+  const feed: FeedState = {
+    url: "https://shop.example.com/products.json",
+    reachable: true,
+    httpStatus: 200,
+    contentType: "application/json",
+    format: "shopify_json",
+    items: [
+      {
+        id: "1",
+        title: "Widget",
+        description: "A great widget.",
+        price: 19.99,
+        currency: null,
+        available: true,
+        link: "https://shop.example.com/products/widget",
+        raw: { product_type: "Widgets" },
+      },
+    ],
+  };
+  const pageWithJsonLd = `<html><head><script type="application/ld+json">${JSON.stringify({
+    "@type": "Product",
+    name: "Widget",
+    description: "A great widget.",
+    material: "plastic",
+    offers: { price: 19.99, priceCurrency: "USD", availability: "https://schema.org/InStock" },
+  })}</script></head></html>`;
+  const pageFetcher: Fetcher = async () => ({ status: 200, headers: {}, body: pageWithJsonLd, redirectChain: [], requiresAuth: false });
+  const { client } = mockLlm([JSON.stringify({ coverage: "basic", missing: ["care", "fit"] })]);
+
+  const signals = await runLlmChecks(feed, pageFetcher, client);
+  check("runLlmChecks: returns both signals end-to-end", signals.length === 2, signals);
+  const titleDesc = signals.find((s) => s.signal_key === "title_description_consistency")!;
+  const enrichment = signals.find((s) => s.signal_key === "discovery_attributes_enrichment")!;
+  check("runLlmChecks: title_description_consistency passes without an LLM call (identical text)", titleDesc.status === "pass", titleDesc);
+  check("runLlmChecks: discovery_attributes_enrichment reflects the LLM's basic/partial verdict", enrichment.status === "partial", enrichment);
+}
+
+// ---------------------------------------------------------------------------
+// 7. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {

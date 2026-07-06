@@ -31,6 +31,11 @@ merchant/
                            # price_consistency_cross_surface / availability_consistency. Samples feed
                            # variants, fetches each product page once (de-duped), extracts schema.org
                            # JSON-LD (Product or ProductGroup→hasVariant), matches by mpn/sku/gtin
+    llmChecks.ts           # Category 2, the 2 LLM-scored signals: title_description_consistency's
+                           # semantic half + discovery_attributes_enrichment. [D] exact-match runs
+                           # first (skips the LLM call when feed/page text is already identical);
+                           # injectable LlmClient (openAiClient is the real impl); degrades to
+                           # not_applicable when OPENAI_API_KEY isn't set
     httpFetcher.ts         # Production Fetcher: native fetch, shared 5s deadline, manual
                            # redirect tracking (chain in evidence), 401/403 → requiresAuth
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
@@ -38,10 +43,10 @@ merchant/
                            # signal insert (run_id stamped; priority_score is DB-generated),
                            # pillar score insert, site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
-                           # cross-check → signals → score → Postgres
+                           # cross-check + LLM checks → signals → score → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
-    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page signal logic,
-                           # known-shortcut fixes, httpFetcher (stubbed global fetch)
+    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM signal
+                           # logic (mock LlmClient), known-shortcut fixes, httpFetcher (stubbed fetch)
 ```
 
 ## Architecture in one paragraph
@@ -83,6 +88,7 @@ node --experimental-strip-types test_live_pipeline.ts
 ```bash
 SUPABASE_URL=https://<project-ref>.supabase.co \
 SUPABASE_SERVICE_ROLE_KEY=... \
+OPENAI_API_KEY=...  # optional — enables title_description_consistency + discovery_attributes_enrichment \
 node --experimental-strip-types runLive.ts shop.example.com
 ```
 
@@ -95,7 +101,8 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
 > Note: Category 2 (Product Data Hygiene) only scores if `sites.feed_url` is set — there's no
 > onboarding UI for it yet, so it's set directly on the `sites` row (Shopify `products.json` or
 > a Google Merchant XML/RSS feed URL). Unset, `feed_available` and its dependents score
-> `not_applicable` rather than `fail`.
+> `not_applicable` rather than `fail`. The 2 LLM-scored signals additionally need `OPENAI_API_KEY`;
+> unset, they score `not_applicable` too, rather than failing the whole run.
 
 ## Status
 
@@ -103,15 +110,16 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
 - [x] UCP compliance signal specs (v1)
 - [x] Category 1 — Discovery & Manifest checks (tested against mocks, live-verified)
 - [x] Category 3 — Capabilities checks (tested against mocks, live-verified)
-- [x] Category 2 — Product Data Hygiene: `feed_available`, `native_commerce_attribute`,
-      `product_id_consistency`, `price_consistency_cross_surface`, `availability_consistency`
-      (Shopify `products.json` + Google Merchant XML parsing, JSON-LD page cross-referencing;
-      tested, live-verified — matched real SKUs/prices/availability across 15 live product pages)
+- [x] Category 2 — Product Data Hygiene, all 7 signals: `feed_available`, `native_commerce_attribute`,
+      `product_id_consistency`, `price_consistency_cross_surface`, `availability_consistency`,
+      `title_description_consistency`, `discovery_attributes_enrichment`
+      (Shopify `products.json` + Google Merchant XML parsing, JSON-LD page cross-referencing,
+      OpenAI-backed semantic/enrichment checks; tested, live-verified — matched real
+      SKUs/prices/availability across 15 live product pages, and got sensible real LLM verdicts
+      on 5 real products with no false contradictions)
 - [x] Real HTTP fetcher + Supabase insert (unit-tested, live-verified against skims.com, gymshark.com)
 - [x] Scorer → `pillar_scores` (unit-tested, live-verified)
 - [x] First live end-to-end runs against real stores (skims.com, gymshark.com)
-- [ ] Category 2 remainder: the two LLM-scored signals (`title_description_consistency`'s semantic
-      half, `discovery_attributes_enrichment`) — need an LLM provider/API key decision
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
 
