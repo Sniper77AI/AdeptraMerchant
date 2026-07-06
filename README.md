@@ -54,16 +54,33 @@ merchant/
                            # redirect tracking (chain in evidence), 401/403 → requiresAuth
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
                            # (excludes not_applicable AND weight=0 signals from scoring)
-    supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle,
-                           # signal insert (run_id stamped; priority_score is DB-generated),
-                           # pillar score insert, site config reads, dev site bootstrap
+    artifacts/
+      manifestArtifact.ts  # Artifact #1 — pure generator for artifact_type='ucp_manifest'. Takes
+                           # the already-fetched ManifestState + a run's SignalRow[], returns a
+                           # draft (or null if nothing to fix). Preserves all valid existing config
+                           # (including a passing sub-capability catalog shape, byte-for-byte);
+                           # auto-fixes use real canonical values; the service endpoint is an
+                           # obvious placeholder (never fabricated); identity_linking and
+                           # endpoint_reachability are flag-only, never auto-added/auto-filled
+      index.ts             # runArtifacts() orchestrator — today calls only the manifest
+                           # generator; sibling modules (feed_fix, jsonld, llms_txt, robots_patch,
+                           # content_rewrite) get added here later
+    supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle, signal
+                           # insert (returns inserted rows for signal_key→id mapping;
+                           # priority_score is DB-generated), pillar score insert, artifact insert
+                           # (resolves_signal_ids mapped from keys; changelog not yet persisted —
+                           # no column for it, printed only), site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
                            # cross-check + LLM checks + policy/contact probes + payment readiness +
-                           # Merchant Center readiness checklist → signals → score → Postgres
+                           # Merchant Center readiness checklist + manifest artifact generation →
+                           # signals → score → artifacts → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
     test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/
                            # payment/readiness signal logic (mock LlmClient), known-shortcut fixes,
                            # httpFetcher (stubbed fetch)
+    test_artifacts.ts      # Manifest artifact generator: no-manifest scaffold, partial-manifest
+                           # preserve+correct (incl. byte-for-byte sub-capability preservation),
+                           # closed-loop validation against the real signal functions, purity
 ```
 
 ## Architecture in one paragraph
@@ -156,7 +173,18 @@ live-verified against two real stores (skims.com, gymshark.com).**
 - [x] Real HTTP fetcher + Supabase insert (unit-tested, live-verified against skims.com, gymshark.com)
 - [x] Scorer → `pillar_scores` (unit-tested, live-verified)
 - [x] First live end-to-end runs against real stores (skims.com, gymshark.com)
-- [ ] Artifact generation (manifest, feed fixes)
+- [x] Artifact generation, artifact #1 (`ucp_manifest`): fixes the manifest-content signals in
+      Category 1 + 3. Pure generator, preserves all valid existing config byte-for-byte (proven
+      live on skims.com's real manifest — mcp transport, sub-capability catalog shape, all three
+      payment handlers untouched), auto-fixes with real canonical values, obvious placeholder for
+      the merchant-specific endpoint, flags (never guesses) unmappable authority URLs and
+      merchant-preference signals (identity_linking, endpoint_reachability). Live-verified on
+      gymshark.com (no manifest → full starter scaffold, 7 signals resolved) and skims.com
+      (existing manifest → 0 changes needed structurally, 4 honest flags). 52 automated tests,
+      including a closed-loop check that re-running the real signal functions against the
+      generated manifest actually passes.
+- [ ] Remaining artifact types: `feed_fix`, `jsonld`, `llms_txt`, `robots_patch`, `content_rewrite`
+      (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
 - [ ] Onboarding UI (feed URL, identity-linking opt-out, and Category 6 attestations are all plain
       DB columns today, set via SQL — no dashboard to set them yet)
@@ -193,3 +221,20 @@ live-verified against two real stores (skims.com, gymshark.com).**
   Merchant Center" (the spec's pass condition) isn't checked at all — there's
   no reliable feed-side policy data to compare against yet — so
   `evidence_json.feed_match` is always `null`, not a fabricated `true`.
+
+- **Artifact changelogs aren't persisted yet.** `artifacts` has no changelog
+  column — `manifestArtifact.ts`'s `ArtifactChangelog` (added/corrected/
+  must_complete/flagged) is printed by `runLive.ts` but not written to the DB.
+  Add a `changelog JSONB` column when a dashboard needs to display it; not
+  blocking, since `resolves_signal_ids` already gives DB-level traceability.
+
+- **Found and fixed during live testing (2026-07-06):** the manifest artifact
+  generator initially marked `ucp_namespace_authority_valid` as "resolved"
+  (in `resolves_signal_keys`) any time the namespace-authority pass *ran* —
+  even if every offending URL turned out to be unmappable and got flagged
+  instead of corrected. Live-verified against skims.com's real
+  `dev.shopify.catalog` vendor URLs (a different path entirely, not just a
+  wrong host on a known path): both got flagged, zero got corrected, yet the
+  signal was still claimed as resolved. Fixed to only mark it resolved when
+  at least one URL was actually rewritten; added a regression test for the
+  all-flagged/none-corrected case.

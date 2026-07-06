@@ -16,6 +16,7 @@
 
 import type { SignalRow, ManifestState } from "./manifestChecks.ts";
 import type { PillarScoreRow } from "./scorer.ts";
+import type { ArtifactDraft } from "./artifacts/index.ts";
 
 export interface SupabaseConfig {
   url: string; // e.g. https://qognnvjehcflbqlzxcru.supabase.co
@@ -103,7 +104,15 @@ export async function markNoManifest(cfg: SupabaseConfig, runId: string): Promis
 // Signals + pillar scores
 // ---------------------------------------------------------------------------
 
-/** Stamp run_id onto portable SignalRows and insert.
+export interface InsertedSignal {
+  id: string;
+  signal_key: string;
+}
+
+/** Stamp run_id onto portable SignalRows and insert. Returns the inserted rows
+ *  (id + signal_key) — not just a count — so the caller can build a
+ *  signal_key → id map for artifacts.resolves_signal_ids (PostgREST already
+ *  returns full rows via prefer: return=representation).
  *  NOTE: priority_score is deliberately ABSENT — in the schema it is a
  *  GENERATED ALWAYS AS (impact * weight / GREATEST(effort,1)) STORED column,
  *  so Postgres computes it and rejects inserts that supply it. The identical
@@ -112,7 +121,7 @@ export async function insertSignals(
   cfg: SupabaseConfig,
   runId: string,
   signals: SignalRow[],
-): Promise<number> {
+): Promise<InsertedSignal[]> {
   const rows = signals.map((s) => ({
     run_id: runId,
     pillar: s.pillar,
@@ -126,8 +135,8 @@ export async function insertSignals(
     evidence_json: s.evidence_json,
     fix_summary: s.fix_summary,
   }));
-  const inserted = await rest<unknown[]>(cfg, "POST", "/rest/v1/signals", rows);
-  return inserted.length;
+  const inserted = await rest<Array<{ id: string; signal_key: string }>>(cfg, "POST", "/rest/v1/signals", rows);
+  return inserted.map((r) => ({ id: r.id, signal_key: r.signal_key }));
 }
 
 export async function insertPillarScores(
@@ -138,6 +147,44 @@ export async function insertPillarScores(
   const rows = pillars.map((p) => ({ run_id: runId, ...p }));
   const inserted = await rest<unknown[]>(cfg, "POST", "/rest/v1/pillar_scores", rows);
   return inserted.length;
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts
+// ---------------------------------------------------------------------------
+
+export interface InsertedArtifact {
+  id: string;
+  artifact_type: string;
+}
+
+/** Inserts generated artifact drafts. resolves_signal_ids is built by mapping
+ *  each draft's signal_keys through signalKeyToId (unmatched keys are dropped
+ *  rather than inserting a bad UUID). deploy_status/is_exportable are set
+ *  explicitly (draft / exportable) — created_at/updated_at are DB-managed and
+ *  deliberately not sent, same discipline as signals.priority_score.
+ *  TODO: the artifacts table has no changelog column yet — the caller prints
+ *  it (runLive.ts) rather than persisting it. Add one (e.g. a changelog JSONB
+ *  column) when the dashboard needs to display it; not blocking this feature. */
+export async function insertArtifacts(
+  cfg: SupabaseConfig,
+  runId: string,
+  siteId: string,
+  drafts: ArtifactDraft[],
+  signalKeyToId: Map<string, string>,
+): Promise<InsertedArtifact[]> {
+  if (drafts.length === 0) return [];
+  const rows = drafts.map((d) => ({
+    run_id: runId,
+    site_id: siteId,
+    artifact_type: d.artifact_type,
+    target_url: d.target_url,
+    content: d.content,
+    resolves_signal_ids: d.resolves_signal_keys.map((k) => signalKeyToId.get(k)).filter((id): id is string => !!id),
+    deploy_status: "draft",
+    is_exportable: true,
+  }));
+  return await rest<InsertedArtifact[]>(cfg, "POST", "/rest/v1/artifacts", rows);
 }
 
 // ---------------------------------------------------------------------------

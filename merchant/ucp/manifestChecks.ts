@@ -66,12 +66,12 @@ const MAX_REDIRECTS = 1; // spec wants manifest directly at the well-known path
  *  Supabase table (open item #5) so new versions are a data update, not a deploy.
  *  Hardcoded here only for the portable/mock version. */
 const KNOWN_UCP_VERSIONS = new Set(["2026-04-08"]);
-const CURRENT_UCP_VERSION = "2026-04-08";
+export const CURRENT_UCP_VERSION = "2026-04-08";
 
 /** Legitimate namespace authority hosts for spec/schema URLs. */
-const VALID_AUTHORITY_HOSTS = new Set(["ucp.dev"]);
+export const VALID_AUTHORITY_HOSTS = new Set(["ucp.dev"]);
 
-const ALLOWED_TRANSPORTS = new Set(["rest", "mcp", "a2a"]);
+export const ALLOWED_TRANSPORTS = new Set(["rest", "mcp", "a2a"]);
 
 // Per-signal weights/impact/effort (from the signal spec doc).
 const W = {

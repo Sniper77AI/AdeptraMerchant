@@ -28,6 +28,7 @@ import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
 import { runPolicyChecks } from "./policyChecks.ts";
 import { runPaymentChecks } from "./paymentChecks.ts";
 import { runReadinessChecks } from "./readinessChecks.ts";
+import { runArtifacts } from "./artifacts/index.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -37,6 +38,7 @@ import {
   markNoManifest,
   insertSignals,
   insertPillarScores,
+  insertArtifacts,
   ensureDevSite,
   getSite,
   type SupabaseConfig,
@@ -110,10 +112,14 @@ try {
     ...readinessSignals,
   ];
 
-  const nSignals = await insertSignals(cfg, run.runId, signals);
+  const insertedSignals = await insertSignals(cfg, run.runId, signals);
+  const signalKeyToId = new Map(insertedSignals.map((s) => [s.signal_key, s.id]));
   const pillars = scorePillars(signals);
   const nPillars = await insertPillarScores(cfg, run.runId, pillars);
   const overall = overallScore(pillars);
+
+  const drafts = runArtifacts(manifest, signals);
+  const insertedArtifacts = await insertArtifacts(cfg, run.runId, siteId, drafts, signalKeyToId);
 
   const noManifest = isManifestMissing(manifest);
   if (noManifest) {
@@ -122,9 +128,21 @@ try {
     await completeRun(cfg, run.runId, overall);
   }
 
-  console.log(`wrote: ${nSignals} signals, ${nPillars} pillar score(s)`);
+  console.log(`wrote: ${insertedSignals.length} signals, ${nPillars} pillar score(s)`);
   for (const p of pillars) {
     console.log(`score: ${p.pillar} = ${p.score}% (${p.signals_passed}/${p.signals_total} passed)`);
+  }
+  console.log(`artifacts: ${insertedArtifacts.length} generated`);
+  for (const draft of drafts) {
+    const c = draft.changelog;
+    console.log(`  ${draft.artifact_type}: +${c.added.length} added, ~${c.corrected.length} corrected, ${c.must_complete.length} must-complete, ${c.flagged.length} flagged`);
+    if (c.must_complete.length > 0) {
+      console.log(`  must complete:`);
+      for (const item of c.must_complete) console.log(`    - ${item}`);
+    }
+    // TODO: artifacts table has no changelog column yet — printing only here.
+    // Add one (e.g. a changelog JSONB column) when the dashboard needs it.
+    console.log(`  changelog (not yet persisted): ${JSON.stringify(c)}`);
   }
   console.log(`run:   ${run.runId} (${noManifest ? "no_manifest" : `complete, overall ${overall}`})`);
 } catch (e) {
