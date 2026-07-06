@@ -151,12 +151,28 @@ export interface SiteConfig {
   rootUrl: string | null;
   identityLinkingOptOut: boolean;
   feedUrl: string | null;
+  merchantCenterAccountReady: boolean | null;
+  merchantCenterFeedsConfigured: boolean;
+  ucpEarlyAccessStatus: "not_applied" | "pending" | "approved" | null;
 }
 
 export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<SiteConfig> {
   const rows = await rest<
-    Array<{ id: string; domain: string | null; root_url: string | null; identity_linking_opt_out: boolean; feed_url: string | null }>
-  >(cfg, "GET", `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,identity_linking_opt_out,feed_url&limit=1`);
+    Array<{
+      id: string;
+      domain: string | null;
+      root_url: string | null;
+      identity_linking_opt_out: boolean;
+      feed_url: string | null;
+      merchant_center_account_ready: boolean | null;
+      merchant_center_feeds_configured: boolean;
+      ucp_early_access_status: "not_applied" | "pending" | "approved" | null;
+    }>
+  >(
+    cfg,
+    "GET",
+    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,identity_linking_opt_out,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
+  );
   if (!rows[0]) throw new Error(`site not found: ${siteId}`);
   return {
     id: rows[0].id,
@@ -164,6 +180,9 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
     rootUrl: rows[0].root_url,
     identityLinkingOptOut: rows[0].identity_linking_opt_out,
     feedUrl: rows[0].feed_url,
+    merchantCenterAccountReady: rows[0].merchant_center_account_ready,
+    merchantCenterFeedsConfigured: rows[0].merchant_center_feeds_configured,
+    ucpEarlyAccessStatus: rows[0].ucp_early_access_status,
   };
 }
 

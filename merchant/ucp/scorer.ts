@@ -11,6 +11,10 @@
  *    signals_passed/signals_total reads honestly in the UI.
  *  - priority_score (per signal, stamped at insert) = impact * weight / max(effort, 1)
  *    — identical to the formula the mock harness prints.
+ *  - weight === 0 signals (Category 6 — Merchant Center Eligibility) are also
+ *    excluded, the same as not_applicable. Category 6 is explicitly a separate
+ *    "readiness checklist," not part of capability-quality scoring — the
+ *    weight classes for Categories 1–5 already sum to 1.00 on their own.
  *
  * PURE: no I/O, no imports beyond types. Runs anywhere.
  */
@@ -43,7 +47,7 @@ export function scorePillars(signals: SignalRow[]): PillarScoreRow[] {
 
   const rows: PillarScoreRow[] = [];
   for (const [pillar, rowsForPillar] of byPillar) {
-    const applicable = rowsForPillar.filter((r) => r.status !== "not_applicable");
+    const applicable = rowsForPillar.filter((r) => r.status !== "not_applicable" && r.weight > 0);
     const earned = applicable.reduce((sum, r) => sum + r.score_contribution, 0);
     const achievable = applicable.reduce((sum, r) => sum + r.weight, 0);
     rows.push({

@@ -17,6 +17,7 @@ merchant/
       20260706000000_no_manifest_status_and_...sql     # analysis_runs.no_manifest status +
                                                         # sites.identity_linking_opt_out
       20260706010000_sites_feed_url.sql                # sites.feed_url (Category 2 onboarding input)
+      20260706020000_sites_merchant_center_eligibility.sql # Category 6 onboarding attestation columns
   ucp/
     signal-specs.md        # The core IP: exact pass/partial/fail rule + evidence + fix
                            # for every UCP compliance signal, grounded in UCP 2026-04-08
@@ -44,18 +45,25 @@ merchant/
                            # credential_security_posture read ucp.payment_handlers from the already-
                            # fetched manifest (no new network call); merchant_of_record_declared is
                            # always not_applicable — no UCP field exists yet to read it from
+    readinessChecks.ts     # Category 6 (Merchant Center Eligibility, readiness checklist — NOT
+                           # scored into capability quality): merchant_center_account_ready /
+                           # ucp_early_access_status, entirely self-attested (sites onboarding
+                           # columns). Both carry weight: 0 so scorer.ts excludes them from the
+                           # score and signals_total/signals_passed while still landing as real rows
     httpFetcher.ts         # Production Fetcher: native fetch, shared 5s deadline, manual
                            # redirect tracking (chain in evidence), 401/403 → requiresAuth
     scorer.ts              # Pure rollup: SignalRow[] → pillar_scores rows + overall score
+                           # (excludes not_applicable AND weight=0 signals from scoring)
     supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle,
                            # signal insert (run_id stamped; priority_score is DB-generated),
                            # pillar score insert, site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
-                           # cross-check + LLM checks + policy/contact probes + payment readiness
-                           # → signals → score → Postgres
+                           # cross-check + LLM checks + policy/contact probes + payment readiness +
+                           # Merchant Center readiness checklist → signals → score → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
-    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/payment
-                           # signal logic (mock LlmClient), known-shortcut fixes, httpFetcher (stubbed fetch)
+    test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/
+                           # payment/readiness signal logic (mock LlmClient), known-shortcut fixes,
+                           # httpFetcher (stubbed fetch)
 ```
 
 ## Architecture in one paragraph
@@ -67,7 +75,7 @@ A merchant enters a store URL. A deterministic-first pipeline crawls a sampled s
 - **`signals` is the single source of truth.** Scores, plans, and artifacts derive from it.
 - **`analysis_runs` are immutable.** Re-running creates a new run → free score-over-time history.
 - **Multi-tenant isolation via membership + `SECURITY DEFINER` helpers** — never via JWT metadata.
-- **Deterministic-first.** LLMs are used only where they add value (2 of ~23 UCP signals).
+- **Deterministic-first.** LLMs are used only where they add value (2 of the 25 UCP signals).
 - **Honest boundaries.** External gates (Merchant Center eligibility, live payment handler, Google
   approval) are scored as readiness checks and shown as "prerequisite you must complete," never
   "done for you."
@@ -115,10 +123,13 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
 
 ## Status
 
+**All 25 UCP signals across all 6 categories in `signal-specs.md` are implemented, tested, and
+live-verified against two real stores (skims.com, gymshark.com).**
+
 - [x] Database schema (deployed to Supabase)
 - [x] UCP compliance signal specs (v1)
-- [x] Category 1 — Discovery & Manifest checks (tested against mocks, live-verified)
-- [x] Category 3 — Capabilities checks (tested against mocks, live-verified)
+- [x] Category 1 — Discovery & Manifest, all 4 signals (tested against mocks, live-verified)
+- [x] Category 3 — Capabilities, all 6 signals (tested against mocks, live-verified)
 - [x] Category 2 — Product Data Hygiene, all 7 signals: `feed_available`, `native_commerce_attribute`,
       `product_id_consistency`, `price_consistency_cross_surface`, `availability_consistency`,
       `title_description_consistency`, `discovery_attributes_enrichment`
@@ -136,14 +147,19 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
       from the already-fetched manifest — no new network call; tested, live-verified against
       skims.com's real payment_handlers block — correctly partial on AP2 explicitness, correctly
       pass on tokenization_specification presence)
+- [x] Category 6 — Merchant Center Eligibility, all 2 signals: `merchant_center_account_ready`,
+      `ucp_early_access_status` — entirely self-attested onboarding columns on `sites`, weight `0`
+      so scorer.ts excludes them from the score and signals_total/signals_passed (per spec: this
+      category is a readiness checklist, not part of capability-quality scoring). Live-verified:
+      unattested → both `not_applicable`; attested pass → both `pass` with the score unchanged
+      (84.46% before and after, on skims.com).
 - [x] Real HTTP fetcher + Supabase insert (unit-tested, live-verified against skims.com, gymshark.com)
 - [x] Scorer → `pillar_scores` (unit-tested, live-verified)
 - [x] First live end-to-end runs against real stores (skims.com, gymshark.com)
-- [ ] Category 6 (Merchant Center Eligibility readiness gate) — purely self-attested, needs an
-      onboarding attestation flag/UI (same pattern as `identity_linking_opt_out`, just for
-      account-readiness rather than a scoring opt-out)
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
+- [ ] Onboarding UI (feed URL, identity-linking opt-out, and Category 6 attestations are all plain
+      DB columns today, set via SQL — no dashboard to set them yet)
 
 ### Open items / known shortcuts
 

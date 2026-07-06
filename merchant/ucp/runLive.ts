@@ -1,10 +1,11 @@
 /**
  * Adeptra Merchant — Live end-to-end run.
  *
- * domain in → real /.well-known/ucp fetch (Category 1 + 3) + product feed
+ * domain in → real /.well-known/ucp fetch (Category 1 + 3 + 4) + product feed
  * fetch + page cross-check + LLM checks (Category 2, if configured) + policy/
- * contact page probes (Category 5) → scorer → rows in analysis_runs /
- * signals / pillar_scores.
+ * contact page probes (Category 5) + Merchant Center readiness checklist
+ * (Category 6, self-attested — not scored into the % score) → scorer → rows
+ * in analysis_runs / signals / pillar_scores.
  *
  * Usage:
  *   SUPABASE_URL=https://<ref>.supabase.co \
@@ -26,6 +27,7 @@ import { runPageConsistencyChecks } from "./pageChecks.ts";
 import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
 import { runPolicyChecks } from "./policyChecks.ts";
 import { runPaymentChecks } from "./paymentChecks.ts";
+import { runReadinessChecks } from "./readinessChecks.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 import { scorePillars, overallScore } from "./scorer.ts";
 import {
@@ -92,7 +94,21 @@ try {
   }
   const policySignals = await runPolicyChecks(site.rootUrl ?? `https://${domain}`, httpFetcher);
   const paymentSignals = runPaymentChecks(manifest);
-  const signals = [...manifestSignals, ...capabilitySignals, ...feedSignals, ...pageSignals, ...llmSignals, ...policySignals, ...paymentSignals];
+  const readinessSignals = runReadinessChecks({
+    accountReady: site.merchantCenterAccountReady,
+    feedsConfigured: site.merchantCenterFeedsConfigured,
+    earlyAccessStatus: site.ucpEarlyAccessStatus,
+  });
+  const signals = [
+    ...manifestSignals,
+    ...capabilitySignals,
+    ...feedSignals,
+    ...pageSignals,
+    ...llmSignals,
+    ...policySignals,
+    ...paymentSignals,
+    ...readinessSignals,
+  ];
 
   const nSignals = await insertSignals(cfg, run.runId, signals);
   const pillars = scorePillars(signals);

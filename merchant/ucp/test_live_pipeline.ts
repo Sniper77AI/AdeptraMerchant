@@ -57,6 +57,12 @@ import {
   sig_credential_security_posture,
   sig_merchant_of_record_declared,
 } from "./paymentChecks.ts";
+import {
+  runReadinessChecks,
+  sig_merchant_center_account_ready,
+  sig_ucp_early_access_status,
+  type MerchantCenterAttestation,
+} from "./readinessChecks.ts";
 import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
@@ -899,7 +905,67 @@ const NO_MANIFEST: ManifestState = {
 }
 
 // ---------------------------------------------------------------------------
-// 9. httpFetcher (stubbed globalThis.fetch)
+// 9. readinessChecks (Category 6: Merchant Center eligibility — readiness
+//    checklist, not scored into capability quality) + scorer.ts weight=0 exclusion
+// ---------------------------------------------------------------------------
+
+{
+  const unattested: MerchantCenterAttestation = { accountReady: null, feedsConfigured: false, earlyAccessStatus: null };
+  const account = sig_merchant_center_account_ready(unattested);
+  const access = sig_ucp_early_access_status(unattested);
+  check("merchant_center_account_ready: not_applicable when unattested", account.status === "not_applicable", account);
+  check("ucp_early_access_status: not_applicable when unattested", access.status === "not_applicable", access);
+  check("readiness signals carry weight 0", account.weight === 0 && access.weight === 0, { account, access });
+}
+
+{
+  const notReady: MerchantCenterAttestation = { accountReady: false, feedsConfigured: false, earlyAccessStatus: "not_applied" };
+  check("merchant_center_account_ready: fail when explicitly attested not ready", sig_merchant_center_account_ready(notReady).status === "fail");
+  check("ucp_early_access_status: fail when not_applied", sig_ucp_early_access_status(notReady).status === "fail");
+}
+
+{
+  const readyNoFeeds: MerchantCenterAttestation = { accountReady: true, feedsConfigured: false, earlyAccessStatus: "pending" };
+  check("merchant_center_account_ready: partial when ready but feeds not configured", sig_merchant_center_account_ready(readyNoFeeds).status === "partial");
+  check("ucp_early_access_status: partial when pending", sig_ucp_early_access_status(readyNoFeeds).status === "partial");
+}
+
+{
+  const fullyReady: MerchantCenterAttestation = { accountReady: true, feedsConfigured: true, earlyAccessStatus: "approved" };
+  const account = sig_merchant_center_account_ready(fullyReady);
+  const access = sig_ucp_early_access_status(fullyReady);
+  check("merchant_center_account_ready: pass when ready and feeds configured", account.status === "pass", account);
+  check("ucp_early_access_status: pass when approved", access.status === "pass", access);
+  check("readiness signals still earn score_contribution 0 despite pass (weight 0)", account.score_contribution === 0 && access.score_contribution === 0, { account, access });
+}
+
+{
+  const signals = runReadinessChecks({ accountReady: true, feedsConfigured: true, earlyAccessStatus: "approved" });
+  check("runReadinessChecks: returns both signals", signals.length === 2, signals);
+  check("runReadinessChecks: every signal is category merchant_center_eligibility", signals.every((s) => s.category === "merchant_center_eligibility"), signals);
+}
+
+{
+  // scorer.ts: weight=0 readiness signals must not affect the score OR the
+  // signals_total/signals_passed counts, even when they pass.
+  const { signals: manifestSignals } = await runManifestChecks("shop.example.com", mockOk);
+  const readinessAllPass = runReadinessChecks({ accountReady: true, feedsConfigured: true, earlyAccessStatus: "approved" });
+  const withoutReadiness = scorePillars(manifestSignals);
+  const withReadiness = scorePillars([...manifestSignals, ...readinessAllPass]);
+  check(
+    "scorer: adding all-pass weight=0 readiness signals doesn't change the score",
+    withReadiness[0].score === withoutReadiness[0].score,
+    { withReadiness, withoutReadiness },
+  );
+  check(
+    "scorer: adding weight=0 readiness signals doesn't change signals_total/signals_passed",
+    withReadiness[0].signals_total === withoutReadiness[0].signals_total && withReadiness[0].signals_passed === withoutReadiness[0].signals_passed,
+    { withReadiness, withoutReadiness },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 10. httpFetcher (stubbed globalThis.fetch)
 // ---------------------------------------------------------------------------
 
 type StubResponse = {
