@@ -88,3 +88,19 @@ pipeline marks the run `failed` with `error_detail` — no zombie `running` rows
 - [ ] Category 2 (feed consistency, Google + Shopify adapters) & Category 3 (capabilities)
 - [ ] Artifact generation (manifest, feed fixes)
 - [ ] Edge-served agent-readable layer
+
+### Open items / known shortcuts
+
+- **"No manifest" vs. "scored 0%" are currently indistinguishable.** A store with
+  no `/.well-known/ucp` (404) and a store that genuinely meets zero requirements
+  both land at `overall_score = 0.00`. Consider a distinct run state (e.g.
+  "no_manifest") so the dashboard can show "hasn't started UCP" rather than a
+  punitive 0% — more accurate and better for sales conversations. (Surfaced by
+  gymshark.com: 404 at the well-known path.)
+
+- **`identity_linking` absence is scored as `fail`, but the spec allows N/A.**
+  When a merchant opts out of account linking by design, the correct status is
+  `not_applicable` (dropped from the denominator), not `fail`. Detecting the
+  opt-out needs an onboarding-level flag we don't model yet. MVP treats "not
+  declared" as fail; revisit once onboarding captures the opt-out so scores
+  aren't unfairly dragged down. (Noted in capabilityChecks.ts.)
