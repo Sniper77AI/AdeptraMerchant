@@ -6,9 +6,8 @@
  * report.html to Supabase Storage, signs both, and records an `exports` row.
  * Prints the two signed URLs.
  *
- * Usage:
- *   SUPABASE_URL=https://<ref>.supabase.co \
- *   SUPABASE_SERVICE_ROLE_KEY=... \
+ * Usage (reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY from the repo-root
+ * .env file automatically — see loadEnvFile() below):
  *   node --experimental-strip-types exportRun.ts <run_id>
  *
  * This file (and runLive.ts) are the ONLY places that read env vars.
@@ -19,6 +18,15 @@
 import { fetchRunBundleData, type SupabaseConfig } from "./supabaseSink.ts";
 import { buildBundlePlan } from "./export/reportBuilder.ts";
 import { uploadAndRecordExport } from "./export/storageSink.ts";
+
+// Resolved relative to this file (not cwd) so `.env` loads correctly whether
+// this is run from the repo root or from merchant/ucp/. Missing .env is not
+// an error — falls back to whatever's already in the shell environment.
+try {
+  process.loadEnvFile(`${(import.meta as any).dirname}/../../.env`);
+} catch (e) {
+  if ((e as { code?: string }).code !== "ENOENT") throw e;
+}
 
 const [runId] = process.argv.slice(2);
 if (!runId) {

@@ -9,11 +9,12 @@
  * shared ArtifactContext) → rows in analysis_runs / signals / pillar_scores /
  * artifacts.
  *
- * Usage:
- *   SUPABASE_URL=https://<ref>.supabase.co \
- *   SUPABASE_SERVICE_ROLE_KEY=... \
- *   OPENAI_API_KEY=...  (optional — enables the 2 LLM-scored signals) \
+ * Usage (reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / OPENAI_API_KEY from
+ * the repo-root .env file automatically — see loadEnvFile() below):
  *   node --experimental-strip-types runLive.ts <domain> [site_id]
+ *
+ * OPENAI_API_KEY is optional — enables the 2 LLM-scored signals; unset, they
+ * degrade to not_applicable.
  *
  * If site_id is omitted, a dev client ("Adeptra Dev") + site row for the domain
  * are created/reused so the FK chain is satisfied without dashboard clicking.
@@ -45,6 +46,15 @@ import {
   getSite,
   type SupabaseConfig,
 } from "./supabaseSink.ts";
+
+// Resolved relative to this file (not cwd) so `.env` loads correctly whether
+// this is run from the repo root or from merchant/ucp/. Missing .env is not
+// an error — falls back to whatever's already in the shell environment.
+try {
+  process.loadEnvFile(`${(import.meta as any).dirname}/../../.env`);
+} catch (e) {
+  if ((e as { code?: string }).code !== "ENOENT") throw e;
+}
 
 const [domain, siteIdArg] = process.argv.slice(2);
 if (!domain) {

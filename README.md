@@ -168,7 +168,28 @@ A merchant enters a store URL. A deterministic-first pipeline crawls a sampled s
 
 ## Running
 
-Requires Node 22+ (native TypeScript type-stripping).
+Requires Node 22+ (native TypeScript type-stripping; `runLive.ts`/`exportRun.ts` also use
+`process.loadEnvFile`, available unflagged since Node 20.12/21.7).
+
+**One-time setup — environment variables.** Copy `.env.example` to `.env` at the repo root and
+fill in real values:
+
+```bash
+cp .env.example .env
+```
+
+```
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+OPENAI_API_KEY=...   # optional — enables title_description_consistency + discovery_attributes_enrichment
+```
+
+`.env` is gitignored and never committed — `.env.example` (no real values) is the committed
+template. `runLive.ts` and `exportRun.ts` — the only two files that read env vars — call
+`process.loadEnvFile()` at startup, resolved relative to their own file location so it works
+whether you run them from the repo root or from `merchant/ucp/`. No dotenv dependency, no shell
+exports needed; missing `.env` isn't an error, it just falls back to whatever's already in the
+shell environment (e.g. in CI, where real secrets are injected directly).
 
 **Mock harness** (four scenarios: compliant / present-but-flawed / missing / auth-walled):
 
@@ -186,9 +207,6 @@ node --experimental-strip-types test_live_pipeline.ts
 **Live end-to-end run** (real store → rows in `analysis_runs` / `signals` / `pillar_scores`):
 
 ```bash
-SUPABASE_URL=https://<project-ref>.supabase.co \
-SUPABASE_SERVICE_ROLE_KEY=... \
-OPENAI_API_KEY=...  # optional — enables title_description_consistency + discovery_attributes_enrichment \
 node --experimental-strip-types runLive.ts shop.example.com
 ```
 
@@ -200,8 +218,6 @@ artifacts were generated, it prints the `exportRun.ts` command to deliver them.
 Supabase Storage as signed, 30-day URLs):
 
 ```bash
-SUPABASE_URL=https://<project-ref>.supabase.co \
-SUPABASE_SERVICE_ROLE_KEY=... \
 node --experimental-strip-types exportRun.ts <run_id>
 ```
 
