@@ -30,6 +30,26 @@ export interface RunHandle {
 }
 
 // ---------------------------------------------------------------------------
+// Auth headers — shared by supabaseSink.ts (PostgREST) and export/storageSink.ts
+// (Storage REST API), since both talk to the same project via plain fetch.
+//
+// New-format keys (sb_publishable_.../sb_secret_...) are opaque tokens, not
+// JWTs. Supabase's API gateway parses anything in `Authorization: Bearer` as
+// a JWT, so sending a new-format key there fails with "Invalid JWT" — the
+// migration guide's fix for backend code is to send it on `apikey` only.
+// Legacy JWT-based service_role keys still need both headers (PostgREST reads
+// the `role` claim out of the JWT in `Authorization` to bypass RLS), so this
+// branches on key format rather than dropping `Authorization` unconditionally.
+// ---------------------------------------------------------------------------
+
+export function authHeaders(cfg: SupabaseConfig): Record<string, string> {
+  if (cfg.serviceRoleKey.startsWith("sb_")) {
+    return { apikey: cfg.serviceRoleKey };
+  }
+  return { apikey: cfg.serviceRoleKey, authorization: `Bearer ${cfg.serviceRoleKey}` };
+}
+
+// ---------------------------------------------------------------------------
 // Low-level PostgREST helper
 // ---------------------------------------------------------------------------
 
@@ -43,8 +63,7 @@ async function rest<T>(
   const res = await fetch(`${cfg.url}${path}`, {
     method,
     headers: {
-      apikey: cfg.serviceRoleKey,
-      authorization: `Bearer ${cfg.serviceRoleKey}`,
+      ...authHeaders(cfg),
       "content-type": "application/json",
       prefer: "return=representation",
       ...extraHeaders,

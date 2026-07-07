@@ -11,7 +11,7 @@
  */
 
 import type { SupabaseConfig } from "../supabaseSink.ts";
-import { insertExport } from "../supabaseSink.ts";
+import { insertExport, authHeaders } from "../supabaseSink.ts";
 import { buildZip } from "./bundle.ts";
 import { BUNDLE_DOWNLOAD_URL_TOKEN, type BundlePlan } from "./reportBuilder.ts";
 
@@ -34,8 +34,7 @@ async function uploadObject(cfg: SupabaseConfig, path: string, bytes: Buffer, co
   const res = await fetch(`${cfg.url}/storage/v1/object/${BUCKET}/${encodeStoragePath(path)}`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${cfg.serviceRoleKey}`,
-      apikey: cfg.serviceRoleKey,
+      ...authHeaders(cfg),
       "content-type": contentType,
       "x-upsert": "true", // re-exporting the same run overwrites rather than 409s
     },
@@ -51,8 +50,7 @@ async function signObject(cfg: SupabaseConfig, path: string): Promise<string> {
   const res = await fetch(`${cfg.url}/storage/v1/object/sign/${BUCKET}/${encodeStoragePath(path)}`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${cfg.serviceRoleKey}`,
-      apikey: cfg.serviceRoleKey,
+      ...authHeaders(cfg),
       "content-type": "application/json",
     },
     body: JSON.stringify({ expiresIn: SIGNED_URL_EXPIRY_SECONDS }),
