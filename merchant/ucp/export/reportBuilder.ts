@@ -22,6 +22,7 @@
 
 import type { PillarScoreRow } from "../scorer.ts";
 import type { ArtifactChangelog } from "../artifacts/types.ts";
+import { decodeFileTree } from "../artifacts/types.ts";
 import type { BundleFile } from "./bundle.ts";
 
 export const BUNDLE_DOWNLOAD_URL_TOKEN = "{{BUNDLE_DOWNLOAD_URL}}";
@@ -81,6 +82,7 @@ const ARTIFACT_TYPE_DISPLAY_NAMES: Record<string, string> = {
   llms_txt: "llms.txt",
   robots_patch: "robots.txt Patch",
   content_rewrite: "Content Rewrite",
+  mcp_scaffold: "WooCommerce MCP Shopping Server",
 };
 
 export function typeDisplayName(artifactType: string): string {
@@ -115,6 +117,7 @@ interface ReportArtifact {
   displayName: string;
   filename: string;
   changelog: ArtifactChangelog | null;
+  fileList?: string[]; // set only for multi-file (file-tree) artifacts — see decodeFileTree
 }
 
 interface ReportModel {
@@ -132,12 +135,16 @@ interface ReportModel {
 function buildModel(data: RunBundleData): ReportModel {
   const passing = data.signals.filter((s) => s.status === "pass");
   const toFix = data.signals.filter((s) => s.status === "fail" || s.status === "partial").slice().sort((a, b) => b.priority_score - a.priority_score);
-  const artifacts = data.artifacts.map((a) => ({
-    artifactType: a.artifact_type,
-    displayName: typeDisplayName(a.artifact_type),
-    filename: filenameForArtifact(a.artifact_type, a.target_url),
-    changelog: a.changelog,
-  }));
+  const artifacts = data.artifacts.map((a) => {
+    const fileTree = a.content ? decodeFileTree(a.content) : null;
+    return {
+      artifactType: a.artifact_type,
+      displayName: typeDisplayName(a.artifact_type),
+      filename: fileTree ? `${a.target_url ?? a.artifact_type}/` : filenameForArtifact(a.artifact_type, a.target_url),
+      changelog: a.changelog,
+      fileList: fileTree ? fileTree.files.map((f) => f.path) : undefined,
+    };
+  });
 
   return {
     domain: data.domain,
@@ -221,6 +228,11 @@ function renderMarkdown(model: ReportModel): string {
     for (const a of model.artifacts) {
       lines.push(`### ${a.displayName} (\`${a.filename}\`)`);
       lines.push("");
+      if (a.fileList) {
+        lines.push("Files in this folder:");
+        for (const f of a.fileList) lines.push(`- \`${a.filename}${f}\``);
+        lines.push("");
+      }
       const c = a.changelog;
       if (c) {
         if (c.added.length) lines.push(`- Added: ${c.added.join("; ")}`);
@@ -281,8 +293,12 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
             items.length
               ? `<div class="changelog-group ${cls}"><strong>${label}:</strong><ul>${items.map((i) => `<li>${escapeHtml(i)}</li>`).join("")}</ul></div>`
               : "";
+          const fileListBlock = a.fileList
+            ? `<div class="changelog-group"><strong>Files in this folder:</strong><ul>${a.fileList.map((f) => `<li><code>${escapeHtml(a.filename + f)}</code></li>`).join("")}</ul></div>`
+            : "";
           return `<div class="artifact">
         <h3>${escapeHtml(a.displayName)} <code>${escapeHtml(a.filename)}</code></h3>
+        ${fileListBlock}
         ${c ? group("Added", c.added, "added") : ""}
         ${c ? group("Corrected", c.corrected, "corrected") : ""}
         ${c ? group("You must complete", c.must_complete, "must-complete") : ""}
@@ -387,7 +403,8 @@ function buildReadme(model: ReportModel): string {
   lines.push("- report.md / report.html  the full readiness report (open report.html in any browser)");
   lines.push("- README.txt               this file");
   for (const a of model.artifacts) {
-    lines.push(`- ${a.filename}  ${a.displayName} — see report.html for what changed and what you still owe`);
+    const kind = a.fileList ? "folder" : "file";
+    lines.push(`- ${a.filename}  ${a.displayName} (${kind}) — see report.html for what changed and what you still owe`);
   }
   lines.push("");
   lines.push("WHAT TO DO, IN ORDER");
@@ -422,7 +439,16 @@ export function buildBundlePlan(data: RunBundleData): BundlePlan {
   ];
   for (const a of data.artifacts) {
     if (a.content == null) continue;
-    files.push({ path: filenameForArtifact(a.artifact_type, a.target_url), contents: a.content });
+    const fileTree = decodeFileTree(a.content);
+    if (fileTree) {
+      // Multi-file artifact: expand into a subfolder rather than one file.
+      // Keyed off the content shape (see artifacts/types.ts), not artifact_type,
+      // so any future multi-file generator gets this for free.
+      const folder = a.target_url ?? a.artifact_type;
+      for (const f of fileTree.files) files.push({ path: `${folder}/${f.path}`, contents: f.contents });
+    } else {
+      files.push({ path: filenameForArtifact(a.artifact_type, a.target_url), contents: a.content });
+    }
   }
 
   return { report_markdown: reportMarkdown, report_html: reportHtmlStandalone, files };

@@ -297,6 +297,7 @@ export interface SiteConfig {
   id: string;
   domain: string | null;
   rootUrl: string | null;
+  platform: string | null;
   identityLinkingOptOut: boolean;
   feedUrl: string | null;
   merchantCenterAccountReady: boolean | null;
@@ -310,6 +311,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
       id: string;
       domain: string | null;
       root_url: string | null;
+      platform: string | null;
       identity_linking_opt_out: boolean;
       feed_url: string | null;
       merchant_center_account_ready: boolean | null;
@@ -319,13 +321,14 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
   >(
     cfg,
     "GET",
-    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,identity_linking_opt_out,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
+    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,platform,identity_linking_opt_out,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
   );
   if (!rows[0]) throw new Error(`site not found: ${siteId}`);
   return {
     id: rows[0].id,
     domain: rows[0].domain,
     rootUrl: rows[0].root_url,
+    platform: rows[0].platform,
     identityLinkingOptOut: rows[0].identity_linking_opt_out,
     feedUrl: rows[0].feed_url,
     merchantCenterAccountReady: rows[0].merchant_center_account_ready,

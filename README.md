@@ -19,7 +19,9 @@ merchant/
       20260706010000_sites_feed_url.sql                # sites.feed_url (Category 2 onboarding input)
       20260706020000_sites_merchant_center_eligibility.sql # Category 6 onboarding attestation columns
       20260706030000_add_artifacts_changelog_json.sql  # artifacts.changelog_json (persists ArtifactChangelog)
+      20260707000000_add_mcp_scaffold_artifact_type.sql # artifacts.artifact_type CHECK constraint += 'mcp_scaffold'
       # Storage bucket "merchant-exports" (private) and exports table predate this — see Export & Delivery below
+      # sites.platform (TEXT, nullable, no CHECK) predates this too — set manually until onboarding writes it
   ucp/
     signal-specs.md        # The core IP: exact pass/partial/fail rule + evidence + fix
                            # for every UCP compliance signal, grounded in UCP 2026-04-08
@@ -58,10 +60,17 @@ merchant/
                            # (excludes not_applicable AND weight=0 signals from scoring)
     artifacts/
       types.ts             # Shared ArtifactType / ArtifactChangelog / ArtifactDraft / ArtifactContext
-                           # ({ manifest, feed, signals, fetcher?, llm?, rootUrl? }) — adding a
-                           # generator input never again requires changing runArtifacts()'s
+                           # ({ manifest, feed, signals, fetcher?, llm?, rootUrl?, platform? }) — adding
+                           # a generator input never again requires changing runArtifacts()'s
                            # signature, just this one context shape. fetcher/llm/rootUrl are
-                           # optional, used only by impure/async generators (content_rewrite today)
+                           # optional, used only by impure/async generators (content_rewrite today);
+                           # platform is an onboarding-declared fact (sites.platform), never guessed,
+                           # used by platform-gated generators (mcp_scaffold today). Also: ArtifactFile /
+                           # ArtifactFileTree + encodeFileTree/decodeFileTree — a tagged, versioned JSON
+                           # shape multi-file generators put in ArtifactDraft.content (the one `content`
+                           # text column, no new DB column) — detected by content shape, not
+                           # artifact_type, so any future multi-file generator gets zip-expansion in
+                           # reportBuilder.ts for free
       manifestArtifact.ts  # Artifact #1 — pure generator for artifact_type='ucp_manifest'. Takes an
                            # ArtifactContext, returns a draft (or null if nothing to fix). Preserves
                            # all valid existing config (including a passing sub-capability catalog
@@ -91,8 +100,21 @@ merchant/
                            # in the output isn't traceable to the source page text.
                            # @context/@type are injected deterministically after parsing (never
                            # trusted to the model) so the output is always valid standalone JSON-LD
-      index.ts             # runArtifacts(ctx) orchestrator — now async (awaits each generator so
-                           # the sync manifest/feed generators and the async content_rewrite
+      mcpScaffoldArtifact.ts # Artifact #4 — pure generator for artifact_type='mcp_scaffold'. Emits a
+                           # deployable WooCommerce MCP shopping-server (catalog search + cart
+                           # building via WooCommerce's public Store API — /wp-json/wc/store/v1/*
+                           # only; never the admin /wc/v3/ API, never the Store API's own /checkout
+                           # endpoint). PLATFORM-GATED, not platform-guessed: only runs when
+                           # ctx.platform === "woocommerce" (an onboarding-declared fact, sites.platform),
+                           # and only when checkout/cart/catalog capability signals aren't already
+                           # all passing. Multi-file output via the tagged ArtifactFileTree in
+                           # content (README.md deploy guide, package.json, tsconfig.json,
+                           # .env.example, src/loadEnv.ts, src/server.ts, src/woocommerce.ts).
+                           # Adeptra generates and configures; the merchant deploys — Adeptra never
+                           # hosts this. resolves_signal_keys is always empty (never claimed
+                           # resolved pre-deployment, same principle as feedArtifact.ts)
+      index.ts             # runArtifacts(ctx) orchestrator — async (awaits each generator so the
+                           # sync manifest/feed/mcp_scaffold generators and the async content_rewrite
                            # generator share one call site); sibling modules (jsonld, llms_txt,
                            # robots_patch) get added here later, without touching this file's
                            # signature again
@@ -104,8 +126,8 @@ merchant/
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
                            # cross-check + LLM checks + policy/contact probes + payment readiness +
                            # Merchant Center readiness checklist + artifact generation (ucp_manifest +
-                           # feed_fix + content_rewrite, from a shared ArtifactContext carrying
-                           # fetcher/llm/rootUrl) → signals → score → artifacts → Postgres
+                           # feed_fix + content_rewrite + mcp_scaffold, from a shared ArtifactContext
+                           # carrying fetcher/llm/rootUrl/platform) → signals → score → artifacts → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
     test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/
                            # payment/readiness signal logic (mock LlmClient), known-shortcut fixes,
@@ -120,15 +142,26 @@ merchant/
                            # title/description contradiction, the anti-fabrication gate rejecting a
                            # hallucinated value, ctx.llm null degrading gracefully, deterministic
                            # @context/@type injection even when the model omits it, determinism +
-                           # async signature. Plus an orchestrator integration check that all three
-                           # generators wire into the now-async runArtifacts(ctx) together
+                           # async signature. mcp_scaffold generator: platform-gate (undeclared/
+                           # non-woocommerce → null; woocommerce + all capabilities already passing →
+                           # null), full file-tree generation, the honesty/boundary check (Store API
+                           # only, no admin API, no checkout call — asserted against comment-stripped
+                           # code so the files' own explanatory comments about what they DON'T do
+                           # can't false-positive the check), no real secrets/URLs baked into
+                           # src/*, the ESM import-order regression test for loadEnv.ts, purity.
+                           # Plus an orchestrator integration check that all four generators wire
+                           # into the now-async runArtifacts(ctx) together
     export/
       reportBuilder.ts     # PURE: turns one run's fetched data into a BundlePlan — a markdown
                            # report, a standalone self-contained report.html (inline CSS, no
                            # external requests), and the file list to zip. Iterates over whatever
                            # artifacts exist generically by artifact_type (typeDisplayName() map,
-                           # one line per new type, generic fallback for unknown ones — proven by
-                           # a mock "mcp_scaffold" type in tests). All dynamic values HTML-escaped
+                           # one line per new type, generic fallback for unknown ones — proven by a
+                           # mock "storefront_theme_patch" type in tests). Multi-file artifacts
+                           # (decodeFileTree(content) returns non-null) expand into a subfolder in
+                           # files[] instead of one file — keyed off content shape, not
+                           # artifact_type, so mcp_scaffold needed zero new branching logic here.
+                           # All dynamic values HTML-escaped
       bundle.ts            # PURE: hand-rolled zero-dependency ZIP writer (STORED/uncompressed
                            # entries — real, spec-compliant, openable by any unzip tool; CRC32 +
                            # local/central-directory/EOCD records, no third-party lib)
@@ -144,9 +177,12 @@ merchant/
     test_export.ts         # reportBuilder purity/determinism, no_manifest framing (never a
                            # punitive 0%), prioritized-plan ordering, artifact coverage, the
                            # unknown-artifact-type future-proofing case, the download-link
-                           # placeholder/offline-copy contract, bundle file list, and an
-                           # independent ZIP-reader round-trip (verifies the hand-rolled format
-                           # byte-for-byte, confirmed separately by the real `unzip` utility)
+                           # placeholder/offline-copy contract, bundle file list, an independent
+                           # ZIP-reader round-trip (verifies the hand-rolled format byte-for-byte,
+                           # confirmed separately by the real `unzip` utility), and multi-file
+                           # artifact expansion (a real encodeFileTree payload → every file lands
+                           # under the expected subfolder in files[], exact contents, shows in the
+                           # report, and round-trips through the real ZIP writer)
 ```
 
 ## Architecture in one paragraph
@@ -320,6 +356,23 @@ live-verified against two real stores (skims.com, gymshark.com).**
       `priority_score`, and every artifact's `must_complete`/`flagged` items front and center.
       Live-verified end-to-end on skims.com and gymshark.com: downloaded and inspected both the
       report page and the zip contents directly from Storage.
+- [x] Artifact generation, artifact #4 (`mcp_scaffold`): a deployable WooCommerce MCP shopping-server
+      scaffold (catalog search + cart building via WooCommerce's public Store API only — never the
+      admin `/wc/v3/` API, never the Store API's own `/checkout` endpoint; `begin_checkout` returns
+      the cart + the store's normal checkout URL for handoff, no payment processing). Platform-GATED
+      on `sites.platform === 'woocommerce'` (an onboarding-declared fact — new migration
+      `20260707000000_add_mcp_scaffold_artifact_type.sql`; onboarding UI to set it doesn't exist yet,
+      so it's a manual column update), never platform-guessed, and only generated when
+      checkout/cart/catalog capability signals aren't already all passing. Multi-file output via a
+      tagged `ArtifactFileTree` in `content` (no new DB column) that `reportBuilder.ts` expands into
+      a `mcp-server/` subfolder in the zip, keyed off content shape so future multi-file generators
+      get this for free. `resolves_signal_keys` is always empty — never claimed resolved
+      pre-deployment. Live-verified: real `null`-gating confirmed against skims.com and gymshark.com
+      (both already have all three capabilities passing via their real manifests — correctly
+      untouched); the positive generation path verified against a real, live 404 (`example.com`, a
+      genuine no-manifest case) with `platform` set manually for the test. The exported zip's
+      `mcp-server/` folder was downloaded, `npm install`'d, built with `tsc` (zero errors), and
+      started for real — confirming the generated code isn't just plausible-looking text.
 - [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
@@ -426,3 +479,27 @@ live-verified against two real stores (skims.com, gymshark.com).**
   deterministically...") and re-verified live against gymshark.com: the
   regenerated artifact now contains genuinely decomposed, fully grounded
   fields with a guaranteed-valid JSON-LD wrapper.
+
+- **Found and fixed during live testing (2026-07-07):** the first live
+  `mcp_scaffold` insert failed with a Postgres check-constraint violation —
+  `artifacts.artifact_type`'s `CHECK` constraint (from the original schema
+  migration) didn't include `'mcp_scaffold'`. Fixed with migration
+  `20260707000000_add_mcp_scaffold_artifact_type.sql` (drops and recreates the
+  constraint with `mcp_scaffold` added). A reminder that this constraint needs
+  a migration every time a genuinely new `artifact_type` ships — the
+  TypeScript union in `artifacts/types.ts` alone doesn't cover it.
+
+- **Found and fixed during live testing (2026-07-07):** a real
+  `npm install && npm run build && npm start` of the exported `mcp-server/`
+  scaffold threw `"Set WOOCOMMERCE_STORE_URL"` even with a populated `.env`.
+  Cause: ES modules evaluate ALL of a file's static imports, in declaration
+  order, before that file's own top-level code runs — so `server.ts`'s inline
+  `process.loadEnvFile()` call (textually before its `woocommerce.ts` import)
+  actually ran *after* `woocommerce.ts`'s module-level
+  `WOOCOMMERCE_STORE_URL` check, which had already thrown. Fixed by moving
+  the `.env`-loading logic into its own side-effect-only module
+  (`src/loadEnv.ts`) imported as `server.ts`'s literal first import — sibling
+  imports evaluate in declaration order, so this now genuinely runs first.
+  Added a regression test asserting `loadEnv.js` is `server.ts`'s first
+  import and that `loadEnv.ts` has no imports of its own. Re-verified with
+  the same real install/build/start cycle: the server now starts cleanly.

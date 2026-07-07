@@ -6,19 +6,24 @@
  * 3. Prioritized plan: failing/partial signals ordered by priority_score desc.
  * 4. Artifact coverage: every artifact appears in report_html and files[];
  *    must_complete items surface in the report.
- * 5. Future-proofing: an unknown artifact_type ("mcp_scaffold") is included
- *    without error or a reportBuilder rewrite.
+ * 5. Future-proofing: an unknown artifact_type ("storefront_theme_patch") is
+ *    included without error or a reportBuilder rewrite.
  * 6. Placeholder contract: report_html contains exactly one
  *    {{BUNDLE_DOWNLOAD_URL}} token before substitution.
  * 7. Bundle file list: report.md / report.html / README.txt + one file per
  *    artifact with the expected derived name.
  * 8. ZIP round-trip: an independent minimal reader confirms buildZip's bytes
  *    decode back to the exact same file list (verifies the hand-rolled format).
+ * 9. Multi-file artifact expansion: a file-tree artifact (mcp_scaffold's real
+ *    shape) expands into a subfolder in files[] — every file present, exact
+ *    contents, report shows the file list, and the whole subtree round-trips
+ *    through the real ZIP writer.
  *
  * Run: node --experimental-strip-types test_export.ts
  */
 
 import { buildBundlePlan, BUNDLE_DOWNLOAD_URL_TOKEN, typeDisplayName, type RunBundleData } from "./export/reportBuilder.ts";
+import { encodeFileTree } from "./artifacts/types.ts";
 import { buildZip } from "./export/bundle.ts";
 
 let failures = 0;
@@ -140,17 +145,21 @@ const COMPLETE_DATA: RunBundleData = {
     artifacts: [
       ...COMPLETE_DATA.artifacts,
       {
-        artifact_type: "mcp_scaffold",
-        target_url: "mcp/scaffold.json",
-        content: JSON.stringify({ mcp: { version: "1" } }),
-        changelog: { added: ["mcp scaffold"], corrected: [], must_complete: [], flagged: [] },
+        artifact_type: "storefront_theme_patch",
+        target_url: "theme/patch.json",
+        content: JSON.stringify({ theme: { version: "1" } }),
+        changelog: { added: ["theme patch"], corrected: [], must_complete: [], flagged: [] },
         resolves_signal_ids: [],
       },
     ],
   };
 
-  check("future-proofing: typeDisplayName never throws on an unknown type", typeof typeDisplayName("mcp_scaffold") === "string");
-  check("future-proofing: unknown type gets a readable auto-generated name", typeDisplayName("mcp_scaffold") === "Mcp Scaffold", typeDisplayName("mcp_scaffold"));
+  check("future-proofing: typeDisplayName never throws on an unknown type", typeof typeDisplayName("storefront_theme_patch") === "string");
+  check(
+    "future-proofing: unknown type gets a readable auto-generated name",
+    typeDisplayName("storefront_theme_patch") === "Storefront Theme Patch",
+    typeDisplayName("storefront_theme_patch"),
+  );
 
   let plan: ReturnType<typeof buildBundlePlan> | null = null;
   let threw: unknown = null;
@@ -160,10 +169,10 @@ const COMPLETE_DATA: RunBundleData = {
     threw = e;
   }
   check("future-proofing: buildBundlePlan does not throw on an unknown artifact_type", threw === null, threw);
-  check("future-proofing: unknown-type artifact appears in report_html", !!plan && plan.report_html.includes("Mcp Scaffold"), plan?.report_html);
+  check("future-proofing: unknown-type artifact appears in report_html", !!plan && plan.report_html.includes("Storefront Theme Patch"), plan?.report_html);
   check(
     "future-proofing: unknown-type artifact's file appears in files[] (no-leading-slash convention preserved)",
-    !!plan && plan.files.some((f) => f.path === "mcp/scaffold.json"),
+    !!plan && plan.files.some((f) => f.path === "theme/patch.json"),
     plan?.files.map((f) => f.path),
   );
 }
@@ -250,6 +259,66 @@ function readZipEntries(buf: Buffer): Array<{ path: string; contents: string }> 
   const roundTripped = readZipEntries(zip);
   check("zip round-trip: unicode content preserved", roundTripped.find((e) => e.path === "unicode.txt")?.contents === files[0].contents);
   check("zip round-trip: empty file preserved", roundTripped.find((e) => e.path === "empty.txt")?.contents === "");
+}
+
+// ---------------------------------------------------------------------------
+// 9. Multi-file artifact expansion (mcp_scaffold's real shape): a file-tree
+//    artifact expands into a subfolder in files[], not a single opaque file.
+// ---------------------------------------------------------------------------
+
+{
+  const scaffoldFiles = [
+    { path: "README.md", contents: "# WooCommerce MCP Shopping Server\n" },
+    { path: "package.json", contents: "{}\n" },
+    { path: "src/server.ts", contents: "// server\n" },
+    { path: "src/woocommerce.ts", contents: "// client\n" },
+  ];
+  const withScaffold: RunBundleData = {
+    ...COMPLETE_DATA,
+    artifacts: [
+      ...COMPLETE_DATA.artifacts,
+      {
+        artifact_type: "mcp_scaffold",
+        target_url: "mcp-server",
+        content: encodeFileTree(scaffoldFiles),
+        changelog: { added: ["scaffold"], corrected: [], must_complete: ["Deploy it"], flagged: ["No payment handling"] },
+        resolves_signal_ids: [],
+      },
+    ],
+  };
+
+  const plan = buildBundlePlan(withScaffold);
+  const paths = plan.files.map((f) => f.path);
+
+  check(
+    "mcp_scaffold bundle: every scaffold file appears under the mcp-server/ subfolder",
+    scaffoldFiles.every((f) => paths.includes(`mcp-server/${f.path}`)),
+    paths,
+  );
+  check(
+    "mcp_scaffold bundle: NOT written as a single opaque file",
+    !paths.includes("mcp-server") && !paths.some((p) => p === "mcp_scaffold.txt"),
+    paths,
+  );
+  check(
+    "mcp_scaffold bundle: file contents preserved exactly",
+    scaffoldFiles.every((f) => plan.files.find((pf) => pf.path === `mcp-server/${f.path}`)?.contents === f.contents),
+    null,
+  );
+  check("mcp_scaffold bundle: report shows the display name", plan.report_html.includes("WooCommerce MCP Shopping Server"), null);
+  check(
+    "mcp_scaffold bundle: report lists the individual files in the folder",
+    plan.report_markdown.includes("mcp-server/README.md") && plan.report_markdown.includes("mcp-server/src/server.ts"),
+    plan.report_markdown,
+  );
+
+  const zip = buildZip(plan.files);
+  const roundTripped = readZipEntries(zip);
+  check(
+    "mcp_scaffold bundle: the full subtree round-trips through the real ZIP writer",
+    scaffoldFiles.every((f) => roundTripped.some((e) => e.path === `mcp-server/${f.path}` && e.contents === f.contents)),
+    roundTripped.map((e) => e.path),
+  );
 }
 
 console.log(failures === 0 ? "\nAll export tests passed." : `\n${failures} FAILURE(S)`);

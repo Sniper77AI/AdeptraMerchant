@@ -36,6 +36,28 @@
  * 17. Determinism + async signature; orchestrator produces all three
  *     artifact types together through the now-async runArtifacts(ctx).
  *
+ * mcp_scaffold generator (artifact_type='mcp_scaffold', pure/sync, WooCommerce-
+ * only, platform-GATED not platform-guessed — ctx.platform comes from the
+ * onboarding-declared sites.platform column):
+ * 18. Platform gate: no platform declared -> null, even with a capability gap.
+ * 19. Platform gate: platform declared but not 'woocommerce' -> null.
+ * 20. WooCommerce + checkout/cart/catalog already all passing -> null (nothing to add).
+ * 21. WooCommerce + a genuine capability gap -> generates the full file-tree
+ *     (README.md, package.json, tsconfig.json, .env.example, src/server.ts,
+ *     src/woocommerce.ts) as a decodable ArtifactFileTree; resolves_signal_keys
+ *     is always empty (never claimed resolved pre-deployment).
+ * 22. HONESTY/BOUNDARY: woocommerce.ts (the only file that talks to the Store
+ *     API) references only /wp-json/wc/store/v1 and never /wc/v3 (admin) or a
+ *     checkout endpoint; begin_checkout in server.ts returns the cart + the
+ *     store's own checkout URL, explicitly stating payment isn't handled here.
+ * 23. No real secrets/URLs baked in: the real store domain (from ctx.rootUrl)
+ *     may appear in README.md as a label, but never in .env.example/src/* —
+ *     those use only the REPLACE-* placeholder and read from process.env.
+ * 24. UCP wiring: the manifest artifact's endpoint placeholder and the
+ *     scaffold's README both point at "your deployed URL" — the report is
+ *     what tells the merchant to reconcile them.
+ * 25. Determinism + purity (sync, no input mutation, identical repeated output).
+ *
  * Run: node --experimental-strip-types test_artifacts.ts
  */
 
@@ -62,7 +84,8 @@ import type { LlmClient } from "./llmChecks.ts";
 import { generateManifestArtifact } from "./artifacts/manifestArtifact.ts";
 import { generateFeedArtifact } from "./artifacts/feedArtifact.ts";
 import { generateContentRewriteArtifact } from "./artifacts/contentRewriteArtifact.ts";
-import { runArtifacts, type ArtifactContext } from "./artifacts/index.ts";
+import { generateMcpScaffoldArtifact } from "./artifacts/mcpScaffoldArtifact.ts";
+import { runArtifacts, decodeFileTree, type ArtifactContext } from "./artifacts/index.ts";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown) {
@@ -765,9 +788,171 @@ function mockLlmReturning(responses: string[]): { client: LlmClient; calls: stri
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator integration: all three generators together through the async
-// runArtifacts(ctx) — manifest + feed remain deterministic/unaffected by the
-// new async content_rewrite generator sharing the same context.
+// mcp_scaffold generator (artifact_type='mcp_scaffold')
+// ---------------------------------------------------------------------------
+
+function capsSignals(checkout: SignalRow["status"], cart: SignalRow["status"], catalog: SignalRow["status"]): SignalRow[] {
+  return [
+    mockSignal("capability_checkout_declared", checkout),
+    mockSignal("capability_cart_declared", cart),
+    mockSignal("capability_catalog_declared", catalog),
+  ];
+}
+
+// 18. Platform gate: no platform declared -> null, even with a capability gap.
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail") });
+  check("mcp_scaffold: platform undeclared -> returns null (never guesses platform)", draft === null, draft);
+}
+
+// 19. Platform gate: a non-WooCommerce platform -> null.
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "shopify" });
+  check("mcp_scaffold: platform='shopify' -> returns null", draft === null, draft);
+}
+
+// 20. WooCommerce + everything already passing -> null (nothing to add).
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("pass", "pass", "pass"), platform: "woocommerce" });
+  check("mcp_scaffold: WooCommerce but checkout/cart/catalog already all passing -> null", draft === null, draft);
+}
+
+// 21. WooCommerce + a genuine capability gap -> generates the full file-tree.
+let scaffoldDraft: ReturnType<typeof generateMcpScaffoldArtifact>;
+{
+  scaffoldDraft = generateMcpScaffoldArtifact({
+    manifest: NO_MANIFEST,
+    feed: null,
+    signals: capsSignals("fail", "fail", "fail"),
+    platform: "woocommerce",
+    rootUrl: "https://mystore.example.com",
+  });
+  check("mcp_scaffold: WooCommerce + capability gap -> draft produced", scaffoldDraft !== null, scaffoldDraft);
+  check("mcp_scaffold: artifact_type is mcp_scaffold", scaffoldDraft?.artifact_type === "mcp_scaffold");
+  check("mcp_scaffold: target_url is the mcp-server folder (no leading slash)", scaffoldDraft?.target_url === "mcp-server", scaffoldDraft?.target_url);
+  check("mcp_scaffold: resolves_signal_keys is always empty (never claimed resolved pre-deployment)", scaffoldDraft?.resolves_signal_keys.length === 0, scaffoldDraft?.resolves_signal_keys);
+
+  const tree = scaffoldDraft ? decodeFileTree(scaffoldDraft.content) : null;
+  check("mcp_scaffold: content decodes as a valid file tree", tree !== null, scaffoldDraft?.content);
+  const paths = tree?.files.map((f) => f.path) ?? [];
+  check(
+    "mcp_scaffold: generates the full expected file-tree",
+    ["README.md", "package.json", "tsconfig.json", ".env.example", "src/loadEnv.ts", "src/server.ts", "src/woocommerce.ts"].every((p) => paths.includes(p)),
+    paths,
+  );
+}
+
+// 22. HONESTY/BOUNDARY: only the Store API, never admin /wc/v3, never a
+//     checkout call; begin_checkout returns cart + URL, no payment.
+//     Checks run against the CODE only (comments stripped) — the source
+//     files' own header comments legitimately mention "checkout"/"/wc/v3" to
+//     document what they deliberately don't do.
+function stripComments(code: string): string {
+  return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+}
+{
+  const tree = decodeFileTree(scaffoldDraft!.content)!;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+  const wooSrc = tree.files.find((f) => f.path === "src/woocommerce.ts")!.contents;
+  const serverCode = stripComments(serverSrc);
+  const wooCode = stripComments(wooSrc);
+
+  check("mcp_scaffold: woocommerce.ts talks to the Store API base path", wooCode.includes("/wp-json/wc/store/v1"), wooCode);
+  check("mcp_scaffold: woocommerce.ts (the only file that calls the store) has no checkout code path at all", !wooCode.toLowerCase().includes("checkout"), wooCode);
+  check("mcp_scaffold: neither file's code ever references the admin /wc/v3/ API", !wooCode.includes("/wc/v3") && !serverCode.includes("/wc/v3"), null);
+  check(
+    "mcp_scaffold: begin_checkout returns the store's own checkout URL (not a Store API call)",
+    serverCode.includes("checkout_url") && serverCode.includes("WOOCOMMERCE_CHECKOUT_PATH"),
+    serverCode,
+  );
+  check(
+    "mcp_scaffold: begin_checkout explicitly states payment is not handled here",
+    serverSrc.toLowerCase().includes("not handled by this server") || serverSrc.toLowerCase().includes("does not process payment"),
+    serverSrc,
+  );
+
+  // Regression test: ES modules evaluate ALL static imports (in declaration
+  // order) before the importing file's own top-level code runs, so .env
+  // loading MUST happen via the first-declared import, not inline code in
+  // server.ts textually "before" the woocommerce.ts import — found live
+  // when a real npm-installed, tsc-built copy of this scaffold threw "Set
+  // WOOCOMMERCE_STORE_URL" even with a populated .env, because
+  // woocommerce.ts's module-level check ran before server.ts's inline
+  // process.loadEnvFile() call ever executed.
+  const firstImportLine = serverCode
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("import "));
+  check(
+    "mcp_scaffold: loadEnv.js is server.ts's FIRST import (ESM import-order fix)",
+    firstImportLine?.includes("./loadEnv.js") ?? false,
+    firstImportLine,
+  );
+  const loadEnvSrc = tree.files.find((f) => f.path === "src/loadEnv.ts")!.contents;
+  check(
+    "mcp_scaffold: loadEnv.ts has no imports of its own (pure side-effect module, evaluates immediately)",
+    !stripComments(loadEnvSrc).includes("import "),
+    loadEnvSrc,
+  );
+}
+
+// 23. No real secrets/URLs baked in: real domain may appear in README.md (a
+//     label, not a secret) but never in .env.example/src/*.
+{
+  const tree = decodeFileTree(scaffoldDraft!.content)!;
+  const readme = tree.files.find((f) => f.path === "README.md")!.contents;
+  const envExample = tree.files.find((f) => f.path === ".env.example")!.contents;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+  const wooSrc = tree.files.find((f) => f.path === "src/woocommerce.ts")!.contents;
+
+  check("mcp_scaffold: README.md personalizes with the real store domain (a label, not a secret)", readme.includes("mystore.example.com"), readme);
+  check("mcp_scaffold: .env.example contains the obvious REPLACE placeholder", envExample.includes("REPLACE-WITH-YOUR-STORE-URL"), envExample);
+  check("mcp_scaffold: no real store domain baked into .env.example", !envExample.includes("mystore.example.com"), envExample);
+  check("mcp_scaffold: no real store domain baked into src/server.ts", !serverSrc.includes("mystore.example.com"), serverSrc);
+  check("mcp_scaffold: no real store domain baked into src/woocommerce.ts", !wooSrc.includes("mystore.example.com"), wooSrc);
+  check(
+    "mcp_scaffold: src files read the store URL from env, not a literal",
+    serverSrc.includes("process.env.WOOCOMMERCE_STORE_URL") && wooSrc.includes("process.env.WOOCOMMERCE_STORE_URL"),
+    null,
+  );
+}
+
+// 24. UCP wiring: the manifest artifact's endpoint placeholder and the
+//     scaffold's README both point at "your deployed URL" for the merchant
+//     to reconcile.
+{
+  const manifestDraft = generateManifestArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail") });
+  const readme = decodeFileTree(scaffoldDraft!.content)!.files.find((f) => f.path === "README.md")!.contents;
+  check(
+    "mcp_scaffold + ucp_manifest: manifest artifact still uses its own endpoint placeholder",
+    !!manifestDraft && manifestDraft.content.includes("REPLACE-WITH-YOUR-UCP-ENDPOINT"),
+    manifestDraft?.content,
+  );
+  check(
+    "mcp_scaffold: README tells the merchant to point the manifest's shopping endpoint at this server's deployed address",
+    readme.toLowerCase().includes("dev.ucp.shopping") && readme.toLowerCase().includes("deployed"),
+    readme,
+  );
+}
+
+// 25. Determinism + purity.
+{
+  const ctx: ArtifactContext = { manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "woocommerce" };
+  const result = generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold purity: synchronous, not a Promise", !(result instanceof Promise));
+
+  const beforeSignals = JSON.stringify(ctx.signals);
+  generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold purity: does not mutate ctx.signals", JSON.stringify(ctx.signals) === beforeSignals);
+
+  const again = generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold purity: identical output across repeated calls", JSON.stringify(result) === JSON.stringify(again));
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator integration: all four generators together through the async
+// runArtifacts(ctx) — manifest + feed + mcp_scaffold remain deterministic/
+// unaffected by the async content_rewrite generator sharing the same context.
 // ---------------------------------------------------------------------------
 
 {
@@ -780,10 +965,10 @@ function mockLlmReturning(responses: string[]): { client: LlmClient; calls: stri
   const jsonld = { "@type": "MerchantReturnPolicy", merchantReturnDays: 21 };
   const { client: llm } = mockLlmReturning([JSON.stringify({ jsonld })]);
 
-  const drafts = await runArtifacts({ manifest: NO_MANIFEST, feed, signals, fetcher, llm });
+  const drafts = await runArtifacts({ manifest: NO_MANIFEST, feed, signals, fetcher, llm, platform: "woocommerce" });
   check(
-    "runArtifacts: produces all three draft types when all three have work to do",
-    drafts.length === 3 && ["ucp_manifest", "feed_fix", "content_rewrite"].every((t) => drafts.some((d) => d.artifact_type === t)),
+    "runArtifacts: produces all four draft types when all four have work to do",
+    drafts.length === 4 && ["ucp_manifest", "feed_fix", "content_rewrite", "mcp_scaffold"].every((t) => drafts.some((d) => d.artifact_type === t)),
     drafts.map((d) => d.artifact_type),
   );
 }
