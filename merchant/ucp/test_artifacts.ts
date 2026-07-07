@@ -22,6 +22,20 @@
  * 10. A consistency-signal failure (e.g. price mismatch) -> flagged, not
  *     auto-fixed, resolves nothing.
  *
+ * Content rewrite generator (artifact_type='content_rewrite', async/impure):
+ * 11. STRUCTURE: return-policy partial -> mock fetcher+LLM produce grounded
+ *     JSON-LD; resolved, must_complete = verify-and-add.
+ * 12. FLAG-on-fail: signal missing entirely -> no content, flagged, resolves
+ *     nothing, fetcher/LLM never called.
+ * 13. FLAG: discovery_attributes_enrichment sparse -> flagged with the
+ *     missing attribute types, nothing drafted.
+ * 14. FLAG: title/description contradiction -> flagged, never drafted.
+ * 15. Anti-fabrication gate: LLM hallucinates a value absent from the source
+ *     page -> whole generation rejected, downgrades to FLAG.
+ * 16. ctx.llm null -> STRUCTURE paths skip without crashing; FLAGs still emitted.
+ * 17. Determinism + async signature; orchestrator produces all three
+ *     artifact types together through the now-async runArtifacts(ctx).
+ *
  * Run: node --experimental-strip-types test_artifacts.ts
  */
 
@@ -44,8 +58,10 @@ import {
   checkEndpointReachability,
 } from "./capabilityChecks.ts";
 import { sig_native_commerce_attribute, type FeedState, type FeedItem } from "./feedChecks.ts";
+import type { LlmClient } from "./llmChecks.ts";
 import { generateManifestArtifact } from "./artifacts/manifestArtifact.ts";
 import { generateFeedArtifact } from "./artifacts/feedArtifact.ts";
+import { generateContentRewriteArtifact } from "./artifacts/contentRewriteArtifact.ts";
 import { runArtifacts, type ArtifactContext } from "./artifacts/index.ts";
 
 let failures = 0;
@@ -529,11 +545,245 @@ function mockFeed(items: FeedItem[], format: FeedState["format"] = "shopify_json
 {
   const feed = mockFeed(Array.from({ length: 3 }, (_, i) => mockFeedItem(`P${i + 1}`, false)));
   const signals = [...allSignalsFor(NO_MANIFEST), sig_native_commerce_attribute(feed)];
-  const drafts = runArtifacts({ manifest: NO_MANIFEST, feed, signals });
-  check("runArtifacts: produces both a ucp_manifest and a feed_fix draft", drafts.length === 2, drafts.map((d) => d.artifact_type));
+  const drafts = await runArtifacts({ manifest: NO_MANIFEST, feed, signals });
+  check("runArtifacts: produces both a ucp_manifest and a feed_fix draft (no content_rewrite signals present)", drafts.length === 2, drafts.map((d) => d.artifact_type));
   check(
     "runArtifacts: includes one ucp_manifest and one feed_fix",
     drafts.some((d) => d.artifact_type === "ucp_manifest") && drafts.some((d) => d.artifact_type === "feed_fix"),
+    drafts.map((d) => d.artifact_type),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// content_rewrite generator (artifact_type='content_rewrite')
+// ---------------------------------------------------------------------------
+
+function mockSignal(signalKey: string, status: SignalRow["status"], evidence: Record<string, unknown> = {}): SignalRow {
+  return {
+    pillar: "ucp",
+    category: "test",
+    signal_key: signalKey,
+    status,
+    weight: 1,
+    score_contribution: 0,
+    impact: 3,
+    effort: 2,
+    evidence_json: evidence,
+    fix_summary: null,
+  };
+}
+
+function mockFetcherReturning(url: string, body: string, status = 200): Fetcher {
+  return async (reqUrl: string) => {
+    if (reqUrl === url) return { status, headers: {}, body, redirectChain: [], requiresAuth: false };
+    return { status: 404, headers: {}, body: "", redirectChain: [], requiresAuth: false };
+  };
+}
+
+function mockLlmReturning(responses: string[]): { client: LlmClient; calls: string[] } {
+  let i = 0;
+  const calls: string[] = [];
+  const client: LlmClient = async (prompt: string) => {
+    calls.push(prompt);
+    const r = responses[Math.min(i, responses.length - 1)];
+    i++;
+    return r;
+  };
+  return { client, calls };
+}
+
+// 1. STRUCTURE: return policy partial -> mock fetcher/LLM produce grounded
+//    MerchantReturnPolicy JSON-LD; resolved + must_complete = verify-and-add.
+{
+  const foundUrl = "https://shop.example.com/pages/returns";
+  const policyHtml = "<html><body><h1>Returns</h1><p>You may return items within 30 days of purchase for a full refund.</p></body></html>";
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "partial", { found_url: foundUrl });
+  const fetcher = mockFetcherReturning(foundUrl, policyHtml);
+  const jsonld = { "@context": "https://schema.org", "@type": "MerchantReturnPolicy", merchantReturnDays: 30, returnPolicyCategory: "https://schema.org/MerchantReturnFiniteReturnWindow" };
+  const { client: llm, calls } = mockLlmReturning([JSON.stringify({ jsonld })]);
+
+  const draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [returnPolicySignal], fetcher, llm });
+  check("content_rewrite STRUCTURE: draft produced", draft !== null, draft);
+  check("content_rewrite STRUCTURE: artifact_type is content_rewrite", draft?.artifact_type === "content_rewrite");
+  check("content_rewrite STRUCTURE: content contains the generated JSON-LD", !!draft && draft.content.includes("MerchantReturnPolicy") && draft.content.includes("30"), draft?.content);
+  check("content_rewrite STRUCTURE: content names where to add it", !!draft && draft.content.includes(foundUrl), draft?.content);
+  check("content_rewrite STRUCTURE: resolves_signal_keys includes the signal", !!draft && draft.resolves_signal_keys.includes("return_policy_present_consistent"), draft?.resolves_signal_keys);
+  check(
+    "content_rewrite STRUCTURE: must_complete is verify-and-add",
+    !!draft && draft.changelog.must_complete.some((m) => m.toLowerCase().includes("verify")),
+    draft?.changelog,
+  );
+  check("content_rewrite STRUCTURE: LLM was actually called", calls.length === 1);
+}
+
+// 1b. @context/@type are set deterministically even when the mock LLM omits
+//     them entirely — regression test for a real bug found live against
+//     gymshark.com's return-policy page (the model returned bare properties
+//     with no @context/@type wrapper, which isn't valid standalone JSON-LD).
+{
+  const foundUrl = "https://shop.example.com/pages/returns";
+  const policyHtml = "<html><body><p>Returns accepted within 30 days of delivery.</p></body></html>";
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "partial", { found_url: foundUrl });
+  const fetcher = mockFetcherReturning(foundUrl, policyHtml);
+  const { client: llm } = mockLlmReturning([JSON.stringify({ jsonld: { merchantReturnDays: 30 } })]); // no @context/@type
+
+  const draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [returnPolicySignal], fetcher, llm });
+  check(
+    "content_rewrite: @context is injected even when the model omits it",
+    !!draft && draft.content.includes('"@context": "https://schema.org"'),
+    draft?.content,
+  );
+  check(
+    "content_rewrite: @type is injected even when the model omits it",
+    !!draft && draft.content.includes('"@type": "MerchantReturnPolicy"'),
+    draft?.content,
+  );
+}
+
+// 2. FLAG-on-fail: return policy missing entirely -> no content, flagged,
+//    resolves nothing, fetcher/LLM not called (nothing to fetch/structure).
+{
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "fail", { found_url: null });
+  let fetcherCalled = false;
+  const fetcher: Fetcher = async () => {
+    fetcherCalled = true;
+    return { status: 200, headers: {}, body: "", redirectChain: [], requiresAuth: false };
+  };
+  let llmCalled = false;
+  const llm: LlmClient = async () => {
+    llmCalled = true;
+    return "{}";
+  };
+
+  const draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [returnPolicySignal], fetcher, llm });
+  check("content_rewrite FLAG-on-fail: draft produced (flag-only)", draft !== null, draft);
+  check(
+    "content_rewrite FLAG-on-fail: no content generated",
+    !!draft && draft.content.includes("No structured-data fixes were generated"),
+    draft?.content,
+  );
+  check(
+    "content_rewrite FLAG-on-fail: flagged with a plain-English message",
+    !!draft && draft.changelog.flagged.some((f) => f.toLowerCase().includes("return policy")),
+    draft?.changelog,
+  );
+  check("content_rewrite FLAG-on-fail: resolves nothing", draft?.resolves_signal_keys.length === 0, draft?.resolves_signal_keys);
+  check("content_rewrite FLAG-on-fail: fetcher NOT called", fetcherCalled === false);
+  check("content_rewrite FLAG-on-fail: LLM NOT called", llmCalled === false);
+}
+
+// 3. FLAG: discovery_attributes_enrichment sparse -> no drafted content,
+//    missing types listed in the flag, no fabricated values.
+{
+  const discoverySignal = mockSignal("discovery_attributes_enrichment", "fail", { missing_attribute_types: ["material", "care instructions"] });
+  const draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [discoverySignal] });
+  check("content_rewrite FLAG discovery: draft produced", draft !== null, draft);
+  check(
+    "content_rewrite FLAG discovery: missing types listed",
+    !!draft && draft.changelog.flagged.some((f) => f.includes("material") && f.includes("care instructions")),
+    draft?.changelog,
+  );
+  check("content_rewrite FLAG discovery: no content drafted", !!draft && !draft.content.includes("```json"), draft?.content);
+  check("content_rewrite FLAG discovery: resolves nothing", draft?.resolves_signal_keys.length === 0, draft?.resolves_signal_keys);
+}
+
+// 4. FLAG: title/description contradiction -> flagged, never drafted.
+{
+  const titleDescSignal = mockSignal("title_description_consistency", "fail", {});
+  const draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [titleDescSignal] });
+  check("content_rewrite FLAG title/desc: draft produced", draft !== null, draft);
+  check(
+    "content_rewrite FLAG title/desc: flagged as contradictory, can't pick a side",
+    !!draft && draft.changelog.flagged.some((f) => f.toLowerCase().includes("contradict")),
+    draft?.changelog,
+  );
+  check("content_rewrite FLAG title/desc: resolves nothing", draft?.resolves_signal_keys.length === 0, draft?.resolves_signal_keys);
+}
+
+// 5. Anti-fabrication: source page states no return window; LLM hallucinates
+//    one anyway -> the whole generation is rejected, not partially repaired.
+{
+  const foundUrl = "https://shop.example.com/pages/returns";
+  const policyHtml = "<html><body><p>We accept returns on unused items in original packaging.</p></body></html>"; // no day count anywhere
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "partial", { found_url: foundUrl });
+  const fetcher = mockFetcherReturning(foundUrl, policyHtml);
+  const jsonld = { "@type": "MerchantReturnPolicy", merchantReturnDays: 30 }; // fabricated — not in source text
+  const { client: llm } = mockLlmReturning([JSON.stringify({ jsonld })]);
+
+  const draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [returnPolicySignal], fetcher, llm });
+  check("anti-fabrication: draft produced (flag-only, generation rejected)", draft !== null, draft);
+  check("anti-fabrication: hallucinated value does NOT appear in the artifact content", !!draft && !draft.content.includes("merchantReturnDays"), draft?.content);
+  check(
+    "anti-fabrication: downgraded to FLAG instead of shipping ungrounded content",
+    !!draft && draft.changelog.flagged.some((f) => f.toLowerCase().includes("not found in the source")),
+    draft?.changelog,
+  );
+  check("anti-fabrication: resolves nothing (not silently resolved with unverifiable data)", draft?.resolves_signal_keys.length === 0, draft?.resolves_signal_keys);
+}
+
+// 6. llm null: STRUCTURE paths skip gracefully (no crash), FLAGs still emitted.
+{
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "partial", { found_url: "https://shop.example.com/pages/returns" });
+  const discoverySignal = mockSignal("discovery_attributes_enrichment", "fail", { missing_attribute_types: ["material"] });
+  let threw: unknown = null;
+  let draft: Awaited<ReturnType<typeof generateContentRewriteArtifact>> = null;
+  try {
+    draft = await generateContentRewriteArtifact({ manifest: NO_MANIFEST, feed: null, signals: [returnPolicySignal, discoverySignal], llm: null });
+  } catch (e) {
+    threw = e;
+  }
+  check("llm null: does not crash", threw === null, threw);
+  check("llm null: draft still produced (flag-only)", draft !== null, draft);
+  check(
+    "llm null: return policy STRUCTURE skipped, not falsely resolved",
+    !!draft && !draft.resolves_signal_keys.includes("return_policy_present_consistent"),
+    draft?.resolves_signal_keys,
+  );
+  check(
+    "llm null: return policy still flagged instead of silently dropped",
+    !!draft && draft.changelog.flagged.some((f) => f.toLowerCase().includes("return policy")),
+    draft?.changelog,
+  );
+  check("llm null: discovery_attributes still flagged", !!draft && draft.changelog.flagged.some((f) => f.includes("material")), draft?.changelog);
+}
+
+// 7. Determinism with fixed mocks + async signature.
+{
+  const foundUrl = "https://shop.example.com/pages/returns";
+  const policyHtml = "<html><body><p>Returns accepted within 14 days.</p></body></html>";
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "partial", { found_url: foundUrl });
+  const fetcher = mockFetcherReturning(foundUrl, policyHtml);
+  const jsonld = { "@type": "MerchantReturnPolicy", merchantReturnDays: 14 };
+  const { client: llm } = mockLlmReturning([JSON.stringify({ jsonld }), JSON.stringify({ jsonld })]);
+  const ctx = { manifest: NO_MANIFEST, feed: null, signals: [returnPolicySignal], fetcher, llm };
+
+  const resultPromise = generateContentRewriteArtifact(ctx);
+  check("content_rewrite: generator returns a Promise (async signature)", resultPromise instanceof Promise);
+  const draftA = await resultPromise;
+  const draftB = await generateContentRewriteArtifact(ctx);
+  check("content_rewrite: deterministic output across repeated calls with matching mocks", JSON.stringify(draftA) === JSON.stringify(draftB));
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator integration: all three generators together through the async
+// runArtifacts(ctx) — manifest + feed remain deterministic/unaffected by the
+// new async content_rewrite generator sharing the same context.
+// ---------------------------------------------------------------------------
+
+{
+  const foundUrl = "https://shop.example.com/pages/returns";
+  const policyHtml = "<html><body><p>Returns accepted within 21 days of delivery.</p></body></html>";
+  const feed = mockFeed(Array.from({ length: 3 }, (_, i) => mockFeedItem(`P${i + 1}`, false)));
+  const returnPolicySignal = mockSignal("return_policy_present_consistent", "partial", { found_url: foundUrl });
+  const signals = [...allSignalsFor(NO_MANIFEST), sig_native_commerce_attribute(feed), returnPolicySignal];
+  const fetcher = mockFetcherReturning(foundUrl, policyHtml);
+  const jsonld = { "@type": "MerchantReturnPolicy", merchantReturnDays: 21 };
+  const { client: llm } = mockLlmReturning([JSON.stringify({ jsonld })]);
+
+  const drafts = await runArtifacts({ manifest: NO_MANIFEST, feed, signals, fetcher, llm });
+  check(
+    "runArtifacts: produces all three draft types when all three have work to do",
+    drafts.length === 3 && ["ucp_manifest", "feed_fix", "content_rewrite"].every((t) => drafts.some((d) => d.artifact_type === t)),
     drafts.map((d) => d.artifact_type),
   );
 }

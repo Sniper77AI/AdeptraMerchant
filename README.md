@@ -58,8 +58,10 @@ merchant/
                            # (excludes not_applicable AND weight=0 signals from scoring)
     artifacts/
       types.ts             # Shared ArtifactType / ArtifactChangelog / ArtifactDraft / ArtifactContext
-                           # ({ manifest, feed, signals }) — adding a generator input never again
-                           # requires changing runArtifacts()'s signature, just this one context shape
+                           # ({ manifest, feed, signals, fetcher?, llm?, rootUrl? }) — adding a
+                           # generator input never again requires changing runArtifacts()'s
+                           # signature, just this one context shape. fetcher/llm/rootUrl are
+                           # optional, used only by impure/async generators (content_rewrite today)
       manifestArtifact.ts  # Artifact #1 — pure generator for artifact_type='ucp_manifest'. Takes an
                            # ArtifactContext, returns a draft (or null if nothing to fix). Preserves
                            # all valid existing config (including a passing sub-capability catalog
@@ -75,9 +77,25 @@ merchant/
                            # "don't silently claim a merchant-preference decision" lesson as
                            # identity_linking. Everything else in Category 2 (consistency signals,
                            # title/description, discovery attributes) is flag-only here
-      index.ts             # runArtifacts(ctx) orchestrator — calls the manifest + feed generators;
-                           # sibling modules (jsonld, llms_txt, robots_patch, content_rewrite) get
-                           # added here later, without touching this file's signature again
+      contentRewriteArtifact.ts # Artifact #3 — the first ASYNC/IMPURE generator, for
+                           # artifact_type='content_rewrite'. Two behaviors only, no
+                           # content-authoring path: STRUCTURE (signal partial — content exists
+                           # but isn't machine-readable — fetch the merchant's own page, ask the
+                           # LLM to decompose ONLY its stated facts into named schema.org
+                           # properties — merchantReturnDays, returnFees, contactPoint, etc. —
+                           # never a raw-text/body dump); FLAG (signal fail, or either LLM-scored
+                           # Category-2 signal — never drafted, a person must decide). Reuses
+                           # LlmClient/openAiClient from llmChecks.ts. Anti-fabrication is
+                           # two-layered: prompt discipline PLUS a mechanical gate
+                           # (allNumbersGrounded) that rejects the WHOLE generation if any number
+                           # in the output isn't traceable to the source page text.
+                           # @context/@type are injected deterministically after parsing (never
+                           # trusted to the model) so the output is always valid standalone JSON-LD
+      index.ts             # runArtifacts(ctx) orchestrator — now async (awaits each generator so
+                           # the sync manifest/feed generators and the async content_rewrite
+                           # generator share one call site); sibling modules (jsonld, llms_txt,
+                           # robots_patch) get added here later, without touching this file's
+                           # signature again
     supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle, signal
                            # insert (returns inserted rows for signal_key→id mapping;
                            # priority_score is DB-generated), pillar score insert, artifact insert
@@ -85,9 +103,9 @@ merchant/
                            # site config reads, dev site bootstrap
     runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
                            # cross-check + LLM checks + policy/contact probes + payment readiness +
-                           # Merchant Center readiness checklist + artifact generation (manifest +
-                           # feed_fix, from a shared ArtifactContext) → signals → score → artifacts
-                           # → Postgres
+                           # Merchant Center readiness checklist + artifact generation (ucp_manifest +
+                           # feed_fix + content_rewrite, from a shared ArtifactContext carrying
+                           # fetcher/llm/rootUrl) → signals → score → artifacts → Postgres
     test.ts                # Mock-driven demo harness for all signal groups
     test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/
                            # payment/readiness signal logic (mock LlmClient), known-shortcut fixes,
@@ -96,8 +114,14 @@ merchant/
                            # correct (incl. byte-for-byte sub-capability preservation), closed-loop
                            # validation against the real signal functions, purity. Feed generator:
                            # full/partial supplemental feed, pass→null, no-feed defensive handling,
-                           # purity, consistency-signal flag-only. Plus an orchestrator integration
-                           # check that both generators wire into runArtifacts(ctx) together
+                           # purity, consistency-signal flag-only. Content-rewrite generator (mock
+                           # Fetcher + mock LlmClient, no real I/O): STRUCTURE with grounded output,
+                           # FLAG-on-fail (fetcher/LLM never called), FLAG for sparse attributes and
+                           # title/description contradiction, the anti-fabrication gate rejecting a
+                           # hallucinated value, ctx.llm null degrading gracefully, deterministic
+                           # @context/@type injection even when the model omits it, determinism +
+                           # async signature. Plus an orchestrator integration check that all three
+                           # generators wire into the now-async runArtifacts(ctx) together
     export/
       reportBuilder.ts     # PURE: turns one run's fetched data into a BundlePlan — a markdown
                            # report, a standalone self-contained report.html (inline CSS, no
@@ -256,6 +280,21 @@ live-verified against two real stores (skims.com, gymshark.com).**
       feed, signals }`) so a third generator never requires changing `runArtifacts()`'s signature;
       shared `ArtifactType`/`ArtifactChangelog`/`ArtifactDraft` in `artifacts/types.ts`;
       `artifacts.changelog_json` persisted (was print-only before).
+- [x] Artifact generation, artifact #3 (`content_rewrite`): the first async/impure generator —
+      structures a merchant's EXISTING return-policy/shipping-info page and homepage contact
+      details into schema.org JSON-LD (never authors new policy language or invents contact
+      details/product facts). `title_description_consistency` and `discovery_attributes_enrichment`
+      are flag-only, same as the other generators' merchant-decision guardrail. Two-layer
+      anti-fabrication: prompt discipline plus a mechanical groundedness check that rejects the
+      whole generation (never partially repairs) if any number in the output isn't traceable to
+      the source page text. `@context`/`@type` are injected deterministically, never trusted to
+      the model. `runArtifacts` is now async to accommodate it; the sync manifest/feed generators
+      are unaffected. Live-verified on skims.com (all 3 STRUCTURE-eligible signals already `pass`
+      — correctly untouched; 2 Category-2 signals `partial` — correctly flagged, not drafted) and
+      gymshark.com (return policy `partial` — real LLM call, fetched the real page, produced
+      grounded `merchantReturnDays: 30`/`returnPolicyCategory`/`returnMethod`/`applicableCountry`,
+      all traceable to the source text, `deploy_status='draft'`, `resolves_signal_ids` populated
+      correctly). Exported successfully alongside the other two artifact types.
 - [x] Export & delivery (Track C): `exportRun.ts <run_id>` turns a completed run into a merchant-ready
       ZIP bundle + a self-contained shareable HTML report page, both uploaded to the private
       `merchant-exports` Storage bucket as signed 30-day URLs, with a row recorded in `exports`.
@@ -265,7 +304,7 @@ live-verified against two real stores (skims.com, gymshark.com).**
       `priority_score`, and every artifact's `must_complete`/`flagged` items front and center.
       Live-verified end-to-end on skims.com and gymshark.com: downloaded and inspected both the
       report page and the zip contents directly from Storage.
-- [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`, `content_rewrite`
+- [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
 - [ ] Onboarding UI (feed URL, identity-linking opt-out, and Category 6 attestations are all plain
@@ -347,3 +386,27 @@ live-verified against two real stores (skims.com, gymshark.com).**
   deliverable today, but not a substitute for real auth if this becomes
   self-serve. The expiry is a named constant in `storageSink.ts`
   (`SIGNED_URL_EXPIRY_SECONDS`), easy to shorten/lengthen later.
+
+- **Found and fixed during live testing (2026-07-06):** the first live
+  `content_rewrite` STRUCTURE run (gymshark.com's real return-policy page)
+  passed both the prompt instructions and the mechanical anti-fabrication
+  gate while still producing low-quality output — the model dumped the raw
+  policy HTML into a single non-standard `policyBody` string instead of
+  decomposing it into real schema.org properties. This satisfied the
+  (deliberately lenient) `hasStructuredData` detector in `policyChecks.ts`
+  (any JSON-LD block flips the signal to `pass`) and the numeric-grounding
+  check (no invented numbers), but defeated the actual point of the
+  signal — an agent parsing the result gets an opaque blob, not
+  `merchantReturnDays: 30` it can reason over. Fixed by (1) giving the LLM
+  an explicit named-property field guide per schema type
+  (`merchantReturnDays`, `returnPolicyCategory`, `returnFees`, etc. for
+  `MerchantReturnPolicy`; `shippingRate`, `deliveryTime`,
+  `shippingDestination` for `OfferShippingDetails`) with an explicit
+  "no raw-text dump" instruction, and (2) injecting `@context`/`@type`
+  deterministically after parsing rather than trusting the model to include
+  them (a related regression the tightened prompt introduced — the model
+  dropped the wrapper once told to focus only on named properties). Added a
+  regression test (`test_artifacts.ts`, "@context/@type are set
+  deterministically...") and re-verified live against gymshark.com: the
+  regenerated artifact now contains genuinely decomposed, fully grounded
+  fields with a guaranteed-valid JSON-LD wrapper.

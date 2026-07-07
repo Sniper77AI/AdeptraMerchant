@@ -8,11 +8,12 @@
  * through runLive.ts by hand every time a second generator needed a new input.
  */
 
-import type { ManifestState, SignalRow } from "../manifestChecks.ts";
+import type { ManifestState, SignalRow, Fetcher } from "../manifestChecks.ts";
 import type { FeedState } from "../feedChecks.ts";
+import type { LlmClient } from "../llmChecks.ts";
 
 /** Union, extensible — each generator still returns one literal member of this. */
-export type ArtifactType = "ucp_manifest" | "feed_fix";
+export type ArtifactType = "ucp_manifest" | "feed_fix" | "content_rewrite";
 
 export interface ArtifactChangelog {
   added: string[];
@@ -33,4 +34,10 @@ export interface ArtifactContext {
   manifest: ManifestState;
   feed: FeedState | null; // null when no feed_url is configured for the site
   signals: SignalRow[];
+  // Optional — used only by impure/async generators (e.g. contentRewriteArtifact.ts).
+  // Pure generators (manifest, feed) ignore these; adding a field here instead of
+  // widening runArtifacts()'s signature is the whole point of this context object.
+  fetcher?: Fetcher;
+  llm?: LlmClient | null;
+  rootUrl?: string;
 }

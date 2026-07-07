@@ -5,8 +5,9 @@
  * fetch + page cross-check + LLM checks (Category 2, if configured) + policy/
  * contact page probes (Category 5) + Merchant Center readiness checklist
  * (Category 6, self-attested — not scored into the % score) → scorer →
- * artifact generation (ucp_manifest + feed_fix, from the shared
- * ArtifactContext) → rows in analysis_runs / signals / pillar_scores / artifacts.
+ * artifact generation (ucp_manifest + feed_fix + content_rewrite, from the
+ * shared ArtifactContext) → rows in analysis_runs / signals / pillar_scores /
+ * artifacts.
  *
  * Usage:
  *   SUPABASE_URL=https://<ref>.supabase.co \
@@ -119,8 +120,8 @@ try {
   const nPillars = await insertPillarScores(cfg, run.runId, pillars);
   const overall = overallScore(pillars);
 
-  const ctx: ArtifactContext = { manifest, feed, signals };
-  const drafts = runArtifacts(ctx);
+  const ctx: ArtifactContext = { manifest, feed, signals, fetcher: httpFetcher, llm, rootUrl: site.rootUrl ?? `https://${domain}` };
+  const drafts = await runArtifacts(ctx);
   const insertedArtifacts = await insertArtifacts(cfg, run.runId, siteId, drafts, signalKeyToId);
 
   const noManifest = isManifestMissing(manifest);
