@@ -144,6 +144,9 @@ try {
     }
   }
   console.log(`run:   ${run.runId} (${noManifest ? "no_manifest" : `complete, overall ${overall}`})`);
+  if (insertedArtifacts.length > 0) {
+    console.log(`\nTo export this run: node exportRun.ts ${run.runId}`);
+  }
 } catch (e) {
   const msg = (e as Error).message ?? String(e);
   await failRun(cfg, run.runId, msg).catch(() => undefined);

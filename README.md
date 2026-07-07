@@ -19,6 +19,7 @@ merchant/
       20260706010000_sites_feed_url.sql                # sites.feed_url (Category 2 onboarding input)
       20260706020000_sites_merchant_center_eligibility.sql # Category 6 onboarding attestation columns
       20260706030000_add_artifacts_changelog_json.sql  # artifacts.changelog_json (persists ArtifactChangelog)
+      # Storage bucket "merchant-exports" (private) and exports table predate this — see Export & Delivery below
   ucp/
     signal-specs.md        # The core IP: exact pass/partial/fail rule + evidence + fix
                            # for every UCP compliance signal, grounded in UCP 2026-04-08
@@ -97,6 +98,31 @@ merchant/
                            # full/partial supplemental feed, pass→null, no-feed defensive handling,
                            # purity, consistency-signal flag-only. Plus an orchestrator integration
                            # check that both generators wire into runArtifacts(ctx) together
+    export/
+      reportBuilder.ts     # PURE: turns one run's fetched data into a BundlePlan — a markdown
+                           # report, a standalone self-contained report.html (inline CSS, no
+                           # external requests), and the file list to zip. Iterates over whatever
+                           # artifacts exist generically by artifact_type (typeDisplayName() map,
+                           # one line per new type, generic fallback for unknown ones — proven by
+                           # a mock "mcp_scaffold" type in tests). All dynamic values HTML-escaped
+      bundle.ts            # PURE: hand-rolled zero-dependency ZIP writer (STORED/uncompressed
+                           # entries — real, spec-compliant, openable by any unzip tool; CRC32 +
+                           # local/central-directory/EOCD records, no third-party lib)
+      storageSink.ts       # IMPURE: uploads the zip + standalone report.html to the private
+                           # "merchant-exports" Storage bucket via the Storage REST API (same
+                           # fetch+service-role-key pattern as supabaseSink.ts), mints 30-day
+                           # signed URLs, substitutes the report's download-link token, and
+                           # records an `exports` row (via supabaseSink.insertExport)
+    exportRun.ts           # CLI: node exportRun.ts <run_id> — fetches a run's data, builds the
+                           # bundle, uploads it, prints the report page URL + zip download URL.
+                           # Separate command from runLive.ts on purpose — export is a distinct
+                           # "deliver this one" action, not part of every analysis
+    test_export.ts         # reportBuilder purity/determinism, no_manifest framing (never a
+                           # punitive 0%), prioritized-plan ordering, artifact coverage, the
+                           # unknown-artifact-type future-proofing case, the download-link
+                           # placeholder/offline-copy contract, bundle file list, and an
+                           # independent ZIP-reader round-trip (verifies the hand-rolled format
+                           # byte-for-byte, confirmed separately by the real `unzip` utility)
 ```
 
 ## Architecture in one paragraph
@@ -143,7 +169,26 @@ node --experimental-strip-types runLive.ts shop.example.com
 ```
 
 If no `site_id` is passed, a dev client + site row are created/reused for the domain. A failed
-pipeline marks the run `failed` with `error_detail` — no zombie `running` rows.
+pipeline marks the run `failed` with `error_detail` — no zombie `running` rows. On success, if any
+artifacts were generated, it prints the `exportRun.ts` command to deliver them.
+
+**Export a completed run** (merchant-ready ZIP bundle + a shareable report page, both uploaded to
+Supabase Storage as signed, 30-day URLs):
+
+```bash
+SUPABASE_URL=https://<project-ref>.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=... \
+node --experimental-strip-types exportRun.ts <run_id>
+```
+
+Prints `report page: <url>` and `download zip: <url>`. The report page has a working "Download the
+fix bundle" button linking to the zip; the zip also contains an offline copy of the same report
+(`report.html`), the markdown version (`report.md`), a `README.txt`, and one file per generated
+artifact. Fails loudly if the run doesn't exist or has no artifacts.
+
+```bash
+node --experimental-strip-types test_export.ts
+```
 
 > Note: `signals.priority_score` is a `GENERATED ALWAYS` column — the DB computes
 > `impact × weight ÷ effort` itself. The sink deliberately does not send it.
@@ -211,6 +256,15 @@ live-verified against two real stores (skims.com, gymshark.com).**
       feed, signals }`) so a third generator never requires changing `runArtifacts()`'s signature;
       shared `ArtifactType`/`ArtifactChangelog`/`ArtifactDraft` in `artifacts/types.ts`;
       `artifacts.changelog_json` persisted (was print-only before).
+- [x] Export & delivery (Track C): `exportRun.ts <run_id>` turns a completed run into a merchant-ready
+      ZIP bundle + a self-contained shareable HTML report page, both uploaded to the private
+      `merchant-exports` Storage bucket as signed 30-day URLs, with a row recorded in `exports`.
+      Zero-dependency hand-rolled ZIP writer (STORED entries) — verified byte-for-byte via an
+      independent reader in tests AND opened successfully by the real `unzip` utility. The report
+      shows the honest no_manifest framing (never a punitive 0%), the prioritized fix plan sorted by
+      `priority_score`, and every artifact's `must_complete`/`flagged` items front and center.
+      Live-verified end-to-end on skims.com and gymshark.com: downloaded and inspected both the
+      report page and the zip contents directly from Storage.
 - [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`, `content_rewrite`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
@@ -277,3 +331,19 @@ live-verified against two real stores (skims.com, gymshark.com).**
   (`native_commerce` is a Merchant Center attribute, not a primary-feed
   field) — for a Shopify-sourced feed, an extra changelog line notes the
   Merchant Center → Products → Feeds upload path specifically.
+
+- **`exports.bundle_storage_path` is the only storage-path column, but an
+  export now produces two objects (zip + report.html).** Rather than a
+  migration, `report.html`'s path is derived by convention — same folder,
+  `report.html` instead of `bundle.zip` — since every access already goes
+  through the recorded path (never a folder listing), so this doesn't create
+  a real lookup gap. Revisit with an explicit `report_storage_path` column if
+  that convention ever stops being reliable (e.g. a future export type that
+  doesn't co-locate the two files).
+
+- **Export links are signed URLs, not real access control (MVP).** A 30-day
+  signed URL grants access to anyone who has it, with no login and no
+  per-viewer revocation — acceptable for a CLI-triggered, operator-shared
+  deliverable today, but not a substitute for real auth if this becomes
+  self-serve. The expiry is a named constant in `storageSink.ts`
+  (`SIGNED_URL_EXPIRY_SECONDS`), easy to shorten/lengthen later.

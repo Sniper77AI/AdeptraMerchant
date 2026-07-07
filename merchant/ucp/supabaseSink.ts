@@ -17,6 +17,7 @@
 import type { SignalRow, ManifestState } from "./manifestChecks.ts";
 import type { PillarScoreRow } from "./scorer.ts";
 import type { ArtifactDraft } from "./artifacts/index.ts";
+import type { RunBundleData } from "./export/reportBuilder.ts";
 
 export interface SupabaseConfig {
   url: string; // e.g. https://qognnvjehcflbqlzxcru.supabase.co
@@ -184,6 +185,88 @@ export async function insertArtifacts(
     changelog_json: d.changelog,
   }));
   return await rest<InsertedArtifact[]>(cfg, "POST", "/rest/v1/artifacts", rows);
+}
+
+// ---------------------------------------------------------------------------
+// Export read helper (Track C) — everything reportBuilder.ts needs for one
+// run, fetched in one place rather than scattering queries through exportRun.ts.
+// ---------------------------------------------------------------------------
+
+/** Returns null when run_id doesn't exist. Read-only — never mutates. */
+export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Promise<RunBundleData | null> {
+  const runRows = await rest<
+    Array<{
+      id: string;
+      site_id: string;
+      status: string;
+      overall_score: number | null;
+      created_at: string;
+      sites: { domain: string | null } | null;
+    }>
+  >(cfg, "GET", `/rest/v1/analysis_runs?id=eq.${runId}&select=id,site_id,status,overall_score,created_at,sites(domain)&limit=1`);
+  const run = runRows[0];
+  if (!run) return null;
+
+  const [pillarRows, signalRows, artifactRows] = await Promise.all([
+    rest<Array<{ pillar: string; score: number; signals_passed: number; signals_total: number }>>(
+      cfg,
+      "GET",
+      `/rest/v1/pillar_scores?run_id=eq.${runId}&select=pillar,score,signals_passed,signals_total`,
+    ),
+    rest<Array<{ signal_key: string; category: string; status: SignalRow["status"]; weight: number; priority_score: number; fix_summary: string | null }>>(
+      cfg,
+      "GET",
+      `/rest/v1/signals?run_id=eq.${runId}&select=signal_key,category,status,weight,priority_score,fix_summary`,
+    ),
+    rest<
+      Array<{
+        artifact_type: string;
+        target_url: string | null;
+        content: string | null;
+        changelog_json: RunBundleData["artifacts"][number]["changelog"];
+        resolves_signal_ids: string[] | null;
+      }>
+    >(cfg, "GET", `/rest/v1/artifacts?run_id=eq.${runId}&select=artifact_type,target_url,content,changelog_json,resolves_signal_ids`),
+  ]);
+
+  return {
+    runId: run.id,
+    siteId: run.site_id,
+    domain: run.sites?.domain ?? "unknown-domain",
+    status: run.status,
+    overallScore: run.overall_score,
+    createdAt: run.created_at,
+    pillars: pillarRows,
+    signals: signalRows,
+    artifacts: artifactRows.map((a) => ({
+      artifact_type: a.artifact_type,
+      target_url: a.target_url,
+      content: a.content,
+      changelog: a.changelog_json,
+      resolves_signal_ids: a.resolves_signal_ids,
+    })),
+  };
+}
+
+export interface InsertedExport {
+  id: string;
+}
+
+/** Records an export. bundle_storage_path is the zip's path — the exports
+ *  table has no separate column for the report page's path; storageSink.ts
+ *  derives it by convention (same folder, "report.html" instead of
+ *  "bundle.zip") rather than needing a schema change. */
+export async function insertExport(
+  cfg: SupabaseConfig,
+  siteId: string,
+  bundleStoragePath: string,
+  artifactCount: number,
+  reason: "client_request" | "cancellation" | "periodic" = "client_request",
+): Promise<InsertedExport> {
+  const rows = await rest<Array<{ id: string }>>(cfg, "POST", "/rest/v1/exports", [
+    { site_id: siteId, bundle_storage_path: bundleStoragePath, reason, artifact_count: artifactCount },
+  ]);
+  return { id: rows[0].id };
 }
 
 // ---------------------------------------------------------------------------
