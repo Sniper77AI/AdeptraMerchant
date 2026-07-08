@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adeptra Merchant — UCP Readiness Check</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 2rem 1.25rem 4rem; line-height: 1.5; color: #1a1a1a; background: #fff; }
+  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #111315; } }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  p.lede { color: #666; margin-bottom: 2rem; }
+  @media (prefers-color-scheme: dark) { p.lede { color: #aaa; } }
+  label { display: block; font-weight: 600; margin: 1.1rem 0 0.35rem; font-size: 0.92rem; }
+  input[type="text"], input[type="url"], select {
+    width: 100%; box-sizing: border-box; padding: 0.6rem 0.7rem; border-radius: 8px;
+    border: 1px solid #ccc; font-size: 0.95rem; background: #fff; color: #1a1a1a;
+  }
+  @media (prefers-color-scheme: dark) { input[type="text"], input[type="url"], select { background: #1c1f22; color: #e6e6e6; border-color: #3a3d40; } }
+  .checkbox-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 1.1rem; }
+  .checkbox-row label { margin: 0; font-weight: 500; }
+  .hint { color: #888; font-size: 0.82rem; margin-top: 0.3rem; }
+  button#submit-btn {
+    margin-top: 1.75rem; padding: 0.75rem 1.4rem; background: #1a56db; color: #fff;
+    border: none; border-radius: 8px; font-weight: 600; font-size: 1rem; cursor: pointer;
+  }
+  button#submit-btn:disabled { opacity: 0.6; cursor: default; }
+  #status { margin-top: 1.5rem; padding: 1rem 1.1rem; border-radius: 8px; display: none; }
+  #status.visible { display: block; }
+  #status.analyzing { background: #eef2f7; color: #444; }
+  @media (prefers-color-scheme: dark) { #status.analyzing { background: #1c1f22; color: #ccc; } }
+  #status.success { background: #eaf6ec; color: #1e4620; }
+  @media (prefers-color-scheme: dark) { #status.success { background: #16241a; color: #b7e4bd; } }
+  #status.error { background: #fdecea; color: #7a1f1f; }
+  @media (prefers-color-scheme: dark) { #status.error { background: #2a1616; color: #f3b4b4; } }
+  .score { font-size: 2.25rem; font-weight: 700; }
+  .score-pct { font-size: 1.25rem; font-weight: 500; }
+  .links { margin-top: 0.75rem; }
+  .links a { display: inline-block; margin-right: 1rem; color: #1a56db; font-weight: 600; text-decoration: none; }
+  @media (prefers-color-scheme: dark) { .links a { color: #7fa8f5; } }
+  .artifact-types { margin-top: 0.5rem; font-size: 0.88rem; color: #555; }
+  @media (prefers-color-scheme: dark) { .artifact-types { color: #aaa; } }
+</style>
+</head>
+<body>
+  <h1>UCP Readiness Check</h1>
+  <p class="lede">See how ready your store is for AI shopping agents — enter your store URL below.</p>
+
+  <label for="url">Store URL</label>
+  <input type="url" id="url" placeholder="https://yourstore.example.com" required>
+
+  <label for="platform">Platform</label>
+  <select id="platform">
+    <option value="woocommerce">WooCommerce</option>
+    <option value="shopify">Shopify</option>
+    <option value="custom">Custom</option>
+    <option value="other">Other</option>
+  </select>
+
+  <label for="feedUrl">Product feed URL (optional)</label>
+  <input type="url" id="feedUrl" placeholder="https://yourstore.example.com/products.json">
+  <div class="hint">Shopify products.json or a Google Merchant XML/RSS feed. Leave blank if you don't have one yet.</div>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="identityLinkingOptOut">
+    <label for="identityLinkingOptOut">We don't support account-linked experiences (opt out of identity linking)</label>
+  </div>
+
+  <button id="submit-btn" type="button">Analyze my store</button>
+
+  <div id="status"></div>
+
+  <script>
+    const btn = document.getElementById("submit-btn");
+    const statusEl = document.getElementById("status");
+
+    function showStatus(cls, html) {
+      statusEl.className = "visible " + cls;
+      statusEl.innerHTML = html;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    btn.addEventListener("click", async () => {
+      const url = document.getElementById("url").value.trim();
+      const platform = document.getElementById("platform").value;
+      const feedUrl = document.getElementById("feedUrl").value.trim();
+      const identityLinkingOptOut = document.getElementById("identityLinkingOptOut").checked;
+
+      if (!url) {
+        showStatus("error", "Please enter your store URL.");
+        return;
+      }
+
+      btn.disabled = true;
+      showStatus("analyzing", "Analyzing your store — this fetches your live UCP manifest, product feed, and policy pages, so it can take a little while…");
+
+      try {
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            url,
+            platform,
+            feedUrl: feedUrl || undefined,
+            identityLinkingOptOut,
+          }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showStatus("error", `Something went wrong: ${escapeHtml(data.error || res.statusText)}`);
+          return;
+        }
+
+        let html = "";
+        if (data.status === "no_manifest") {
+          html += `<div><strong>No UCP manifest found yet</strong> — this store hasn't started UCP. See your fix files below to get started.</div>`;
+        } else if (typeof data.overallScore === "number") {
+          html += `<div class="score">${data.overallScore}<span class="score-pct">%</span></div><div>Overall UCP Readiness</div>`;
+        }
+
+        if (data.reportUrl || data.bundleUrl) {
+          html += `<div class="links">`;
+          if (data.reportUrl) html += `<a href="${escapeHtml(data.reportUrl)}" target="_blank" rel="noopener">View report</a>`;
+          if (data.bundleUrl) html += `<a href="${escapeHtml(data.bundleUrl)}" target="_blank" rel="noopener">Download fix bundle (ZIP)</a>`;
+          html += `</div>`;
+        }
+        if (data.note) {
+          html += `<div style="margin-top:0.75rem">${escapeHtml(data.note)}</div>`;
+        }
+        if (Array.isArray(data.artifactTypes) && data.artifactTypes.length > 0) {
+          html += `<div class="artifact-types">Fixes generated: ${data.artifactTypes.map(escapeHtml).join(", ")}</div>`;
+        }
+
+        showStatus("success", html);
+      } catch (err) {
+        showStatus("error", `Request failed: ${escapeHtml(err.message || String(err))}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

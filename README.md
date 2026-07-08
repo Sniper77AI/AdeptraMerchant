@@ -122,12 +122,35 @@ merchant/
                            # insert (returns inserted rows for signal_key→id mapping;
                            # priority_score is DB-generated), pillar score insert, artifact insert
                            # (resolves_signal_ids mapped from keys; changelog_json persisted),
-                           # site config reads, dev site bootstrap
-    runLive.ts             # End-to-end CLI: domain → live manifest + capability + feed + page
-                           # cross-check + LLM checks + policy/contact probes + payment readiness +
-                           # Merchant Center readiness checklist + artifact generation (ucp_manifest +
-                           # feed_fix + content_rewrite + mcp_scaffold, from a shared ArtifactContext
-                           # carrying fetcher/llm/rootUrl/platform) → signals → score → artifacts → Postgres
+                           # site config reads. SupabaseConfig gained an optional `fetcher?` (defaults
+                           # to real fetch) so rest() and storageSink.ts's upload/sign calls are
+                           # injectable for tests, the same portability contract the signal-check
+                           # modules already use — no globalThis.fetch monkey-patching needed.
+                           # ensureClient (shared client lookup-or-create) backs both ensureDevSite
+                           # (the smoke-test shortcut) and upsertIntakeSite (real intake — see
+                           # pipeline.ts) — the latter dedups on (client_id, root_url), the actual
+                           # `sites` UNIQUE constraint, and PATCHes only newly-provided fields on a
+                           # repeat submission rather than silently ignoring an updated answer
+    pipeline.ts            # Callable pipeline (no process.argv/exit/console.log): runAnalysis,
+                           # runExport, ensureSiteFromIntake — the same engine called by the CLIs
+                           # below, the HTTP intake endpoint (merchant/api/analyze.ts), and later an
+                           # agent caller, unchanged. runAnalysis takes an optional onLog callback for
+                           # progress messages (no-op default) and returns {status:"failed", error}
+                           # instead of throwing/exiting on a downstream failure — every caller decides
+                           # how to surface that. runExport throws typed RunNotFoundError/
+                           # NoArtifactsError for the caller to handle (a store with zero fixable
+                           # signals legitimately produces zero artifacts — that's good news, not a
+                           # bug). ensureSiteFromIntake writes real client+site rows via
+                           # upsertIntakeSite — NOT ensureDevSite's "Adeptra Dev" shortcut — defaulting
+                           # clientName to the submitted domain when omitted (documented pre-auth seam:
+                           # a shared placeholder name would incorrectly bucket unrelated merchants
+                           # under one client; real accounts replace this once auth/dashboard exist)
+    runLive.ts             # End-to-end CLI (thin wrapper around pipeline.ts's runAnalysis): domain →
+                           # live manifest + capability + feed + page cross-check + LLM checks +
+                           # policy/contact probes + payment readiness + Merchant Center readiness
+                           # checklist + artifact generation (ucp_manifest + feed_fix + content_rewrite
+                           # + mcp_scaffold) → signals → score → artifacts → Postgres. Only handles
+                           # argv/env/console; behavior re-verified byte-identical after the extraction
     test.ts                # Mock-driven demo harness for all signal groups
     test_live_pipeline.ts  # Automated assertions: scorer math, capability/feed/page/LLM/policy/
                            # payment/readiness signal logic (mock LlmClient), known-shortcut fixes,
@@ -170,10 +193,12 @@ merchant/
                            # fetch+service-role-key pattern as supabaseSink.ts), mints 30-day
                            # signed URLs, substitutes the report's download-link token, and
                            # records an `exports` row (via supabaseSink.insertExport)
-    exportRun.ts           # CLI: node exportRun.ts <run_id> — fetches a run's data, builds the
-                           # bundle, uploads it, prints the report page URL + zip download URL.
-                           # Separate command from runLive.ts on purpose — export is a distinct
-                           # "deliver this one" action, not part of every analysis
+    exportRun.ts           # CLI (thin wrapper around pipeline.ts's runExport): node exportRun.ts
+                           # <run_id> — fetches a run's data, builds the bundle, uploads it, prints
+                           # the report page URL + zip download URL. Separate command from runLive.ts
+                           # on purpose — export is a distinct "deliver this one" action, not part of
+                           # every analysis. Only handles argv/env/console; behavior re-verified
+                           # byte-identical after the extraction
     test_export.ts         # reportBuilder purity/determinism, no_manifest framing (never a
                            # punitive 0%), prioritized-plan ordering, artifact coverage, the
                            # unknown-artifact-type future-proofing case, the download-link
@@ -183,6 +208,45 @@ merchant/
                            # artifact expansion (a real encodeFileTree payload → every file lands
                            # under the expected subfolder in files[], exact contents, shows in the
                            # report, and round-trips through the real ZIP writer)
+    test_pipeline.ts       # ensureSiteFromIntake (real client+site rows with platform/feed_url/
+                           # opt-out written to the right columns, default clientName=domain,
+                           # PATCH-not-duplicate on a repeat submission), runAnalysis (documented
+                           # result shape; returns {status:"failed"} — never throws/exits — on a
+                           # forced downstream failure), runExport (RunNotFoundError/NoArtifactsError,
+                           # documented success shape), and the endpoint handler (valid POST → 200,
+                           # missing url/platform → 400, non-POST → 405, analysis failure → 500,
+                           # NoArtifactsError from export → 200 with a note, not an error). Mocks
+                           # PostgREST/Storage via SupabaseConfig.fetcher injection; httpFetcher.ts
+                           # (used inside runAnalysis, no injection point of its own) is covered by a
+                           # temporary globalThis.fetch swap, restored in a finally block
+  api/
+    analyze.ts             # Intake endpoint — Vercel-shaped, runs locally today. A plain Node
+                           # http-compatible handler `(req: IncomingMessage, res: ServerResponse) =>
+                           # Promise<void>`, no @vercel/node package: Vercel's Node runtime is
+                           # documented-compatible with plain http handlers directly, so a later
+                           # `vercel deploy` (Vercel project root set to merchant/) is a config flip,
+                           # not a rewrite. Reads the request body manually from the raw stream +
+                           # JSON.parse (portable to both local and Vercel; avoids depending on
+                           # Vercel's req.body sugar a local server doesn't have). Flow: validate →
+                           # ensureSiteFromIntake → runAnalysis → runExport → JSON response. A store
+                           # that's already fully compliant can legitimately produce zero artifacts —
+                           # NoArtifactsError from export still yields 200 with reportUrl/bundleUrl:
+                           # null + a note, not a failure. createHandler(deps) exists purely for
+                           # testability (dependency injection, no mocking framework needed); the
+                           # default export used by serve.ts/Vercel is createHandler() with the real
+                           # pipeline.ts functions. Reads env vars (SUPABASE_URL,
+                           # SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY) — same names as .env today
+    serve.ts               # Local dev server only (node:http, zero dependencies) — routes GET / to
+                           # the static form and POST /api/analyze to the real handler. Not deployed
+                           # anywhere; exists purely so analyze.ts is runnable on your own machine
+                           # before there's ever a Vercel project
+    public/
+      index.html           # The thin intake form: store URL, platform dropdown, optional feed URL,
+                           # identity-linking opt-out checkbox. Self-contained (inline CSS/JS, no
+                           # framework, light/dark aware — same style as the generated report.html).
+                           # A button + fetch() POST to /api/analyze, not a <form> submit — shows an
+                           # "analyzing…" state, then the score + report/download links (or the
+                           # "no fixes needed" note when nothing was exportable)
 ```
 
 ## Architecture in one paragraph
@@ -221,11 +285,11 @@ OPENAI_API_KEY=...   # optional — enables title_description_consistency + disc
 ```
 
 `.env` is gitignored and never committed — `.env.example` (no real values) is the committed
-template. `runLive.ts` and `exportRun.ts` — the only two files that read env vars — call
-`process.loadEnvFile()` at startup, resolved relative to their own file location so it works
-whether you run them from the repo root or from `merchant/ucp/`. No dotenv dependency, no shell
-exports needed; missing `.env` isn't an error, it just falls back to whatever's already in the
-shell environment (e.g. in CI, where real secrets are injected directly).
+template. `runLive.ts`, `exportRun.ts`, and `merchant/api/analyze.ts` — the only files that read env
+vars — call `process.loadEnvFile()` at startup, resolved relative to their own file location so it
+works regardless of which directory you run them from. No dotenv dependency, no shell exports
+needed; missing `.env` isn't an error, it just falls back to whatever's already in the shell
+environment (e.g. in CI, or Vercel's injected env vars later).
 
 **Mock harness** (four scenarios: compliant / present-but-flawed / missing / auth-walled):
 
@@ -265,6 +329,29 @@ artifact. Fails loudly if the run doesn't exist or has no artifacts.
 ```bash
 node --experimental-strip-types test_export.ts
 ```
+
+**Pipeline unit tests** (mock-`fetch`-injected — `ensureSiteFromIntake`/`runAnalysis`/`runExport`/
+the intake endpoint handler, no real network/DB):
+
+```bash
+node --experimental-strip-types test_pipeline.ts
+```
+
+**Local intake endpoint + form** (the same `runAnalysis`/`runExport` engine as the CLIs above,
+driven through a browser instead — a Vercel-shaped handler that just happens to run locally today;
+no Vercel account or deployment involved):
+
+```bash
+node --experimental-strip-types merchant/api/serve.ts
+```
+
+Prints `http://localhost:3000` (override with `PORT=...`). Open it in a browser, fill in a store
+URL + platform, and submit — it calls `ensureSiteFromIntake` (writing a real `clients`/`sites` row,
+not the `ensureDevSite` shortcut below), then `runAnalysis`, then `runExport`, and renders the score
++ report/download links. A store with nothing to fix still returns `200` with a note — that's a
+good outcome, not an error. Deploying this for real later is a config change (set the Vercel project
+root to `merchant/`), not a rewrite — `merchant/api/analyze.ts` is a plain Node `http` handler with
+no Vercel-specific imports.
 
 > Note: `signals.priority_score` is a `GENERATED ALWAYS` column — the DB computes
 > `impact × weight ÷ effort` itself. The sink deliberately does not send it.
@@ -376,8 +463,25 @@ live-verified against two real stores (skims.com, gymshark.com).**
 - [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
+- [x] Callable pipeline + intake endpoint + thin form: `runAnalysis`/`runExport`/`ensureSiteFromIntake`
+      extracted from `runLive.ts`/`exportRun.ts` into plain functions in `pipeline.ts` (no
+      process.argv/exit/console.log) — the same engine now callable by a human (CLI), an HTTP form
+      (`merchant/api/analyze.ts` + `public/index.html`), and later an agent. `ensureSiteFromIntake`
+      writes real `clients`/`sites` rows (platform/feed_url/opt-out to the actual columns), not the
+      `ensureDevSite` dev shortcut — verified live: a submission creates a new client+site, a repeat
+      submission for the same URL updates that same row (confirmed via direct SQL — one row,
+      `platform`/`feed_url` reflecting the latest submission, not a duplicate). The intake endpoint is
+      a plain Node `http` handler (no `@vercel/node`, zero dependencies) so a later Vercel deployment
+      is a config change, not a rewrite; `merchant/api/serve.ts` runs it locally today. Live-verified
+      end-to-end through the actual HTTP endpoint (curl, matching exactly what the form's `fetch()`
+      call sends): real client/site creation, real analysis, real export, real signed URLs. One
+      regression caught by the required live re-run of `runLive.ts`/`exportRun.ts` before this
+      shipped: `exportRun.ts`'s CLI output referenced `result.runId`, but the extracted
+      `ExportResult` type didn't carry it — fixed by adding `runId` to `ExportResult`, with a
+      regression test added and the live re-run repeated to confirm.
 - [ ] Onboarding UI (feed URL, identity-linking opt-out, and Category 6 attestations are all plain
-      DB columns today, set via SQL — no dashboard to set them yet)
+      DB columns today, set via SQL — no dashboard to set them yet; the intake form is a first step
+      but isn't a full dashboard)
 
 ### Open items / known shortcuts
 

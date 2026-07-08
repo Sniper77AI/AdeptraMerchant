@@ -31,7 +31,8 @@ function encodeStoragePath(path: string): string {
 }
 
 async function uploadObject(cfg: SupabaseConfig, path: string, bytes: Buffer, contentType: string): Promise<void> {
-  const res = await fetch(`${cfg.url}/storage/v1/object/${BUCKET}/${encodeStoragePath(path)}`, {
+  const doFetch = cfg.fetcher ?? fetch;
+  const res = await doFetch(`${cfg.url}/storage/v1/object/${BUCKET}/${encodeStoragePath(path)}`, {
     method: "POST",
     headers: {
       ...authHeaders(cfg),
@@ -47,7 +48,8 @@ async function uploadObject(cfg: SupabaseConfig, path: string, bytes: Buffer, co
 }
 
 async function signObject(cfg: SupabaseConfig, path: string): Promise<string> {
-  const res = await fetch(`${cfg.url}/storage/v1/object/sign/${BUCKET}/${encodeStoragePath(path)}`, {
+  const doFetch = cfg.fetcher ?? fetch;
+  const res = await doFetch(`${cfg.url}/storage/v1/object/sign/${BUCKET}/${encodeStoragePath(path)}`, {
     method: "POST",
     headers: {
       ...authHeaders(cfg),

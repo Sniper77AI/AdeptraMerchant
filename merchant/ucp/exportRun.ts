@@ -1,23 +1,27 @@
 /**
- * Adeptra Merchant — Export a completed run into a merchant-ready bundle.
+ * Adeptra Merchant — Export a completed run into a merchant-ready bundle
+ * (thin CLI wrapper around pipeline.ts).
  *
  * Given a run_id: fetches everything reportBuilder.ts needs, builds the
  * report + zip file list (pure), zips it, uploads the zip + a standalone
  * report.html to Supabase Storage, signs both, and records an `exports` row.
  * Prints the two signed URLs.
  *
+ * This file only does argv/env/console concerns; the actual pipeline
+ * (runExport) is a plain function in pipeline.ts, callable the same way by
+ * the HTTP intake endpoint (merchant/api/analyze.ts) or a future agent caller.
+ *
  * Usage (reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY from the repo-root
  * .env file automatically — see loadEnvFile() below):
  *   node --experimental-strip-types exportRun.ts <run_id>
  *
- * This file (and runLive.ts) are the ONLY places that read env vars.
+ * This file (with runLive.ts and merchant/api/analyze.ts) reads env vars.
  * Deliberately a separate command from runLive.ts — exporting isn't part of
  * every analysis run, it's a distinct "deliver this one" action.
  */
 
-import { fetchRunBundleData, type SupabaseConfig } from "./supabaseSink.ts";
-import { buildBundlePlan } from "./export/reportBuilder.ts";
-import { uploadAndRecordExport } from "./export/storageSink.ts";
+import type { SupabaseConfig } from "./supabaseSink.ts";
+import { runExport, RunNotFoundError, NoArtifactsError } from "./pipeline.ts";
 
 // Resolved relative to this file (not cwd) so `.env` loads correctly whether
 // this is run from the repo root or from merchant/ucp/. Missing .env is not
@@ -43,22 +47,20 @@ if (!cfg.url || !cfg.serviceRoleKey) {
   process.exit(1);
 }
 
-const data = await fetchRunBundleData(cfg, runId);
-if (!data) {
-  console.error(`run not found: ${runId}`);
+try {
+  const result = await runExport({ runId, config: cfg });
+  console.log(`run:      ${result.runId} (${result.status}) — ${result.domain}`);
+  console.log(`artifacts: ${result.artifactCount}`);
+  console.log(`export:   ${result.exportId}`);
+  console.log(`report page:  ${result.reportUrl}`);
+  console.log(`download zip: ${result.bundleUrl}`);
+} catch (e) {
+  if (e instanceof RunNotFoundError) {
+    console.error(`run not found: ${runId}`);
+  } else if (e instanceof NoArtifactsError) {
+    console.error(`run ${runId} has no artifacts to export — nothing to deliver.`);
+  } else {
+    console.error((e as Error).message ?? String(e));
+  }
   process.exit(1);
 }
-if (data.artifacts.length === 0) {
-  console.error(`run ${runId} has no artifacts to export — nothing to deliver.`);
-  process.exit(1);
-}
-
-console.log(`run:      ${data.runId} (${data.status}) — ${data.domain}`);
-console.log(`artifacts: ${data.artifacts.length}`);
-
-const plan = buildBundlePlan(data);
-const result = await uploadAndRecordExport(cfg, data.siteId, data.domain, data.runId, plan, data.artifacts.length);
-
-console.log(`export:   ${result.exportId}`);
-console.log(`report page:  ${result.reportUrl}`);
-console.log(`download zip: ${result.bundleUrl}`);

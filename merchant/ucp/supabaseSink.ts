@@ -22,6 +22,10 @@ import type { RunBundleData } from "./export/reportBuilder.ts";
 export interface SupabaseConfig {
   url: string; // e.g. https://qognnvjehcflbqlzxcru.supabase.co
   serviceRoleKey: string;
+  // Optional — defaults to the real global fetch. Injectable so tests can
+  // mock PostgREST/Storage responses without monkey-patching globalThis.fetch,
+  // the same portability contract the signal-check modules use for HTTP.
+  fetcher?: typeof fetch;
 }
 
 export interface RunHandle {
@@ -60,7 +64,8 @@ async function rest<T>(
   body?: unknown,
   extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  const res = await fetch(`${cfg.url}${path}`, {
+  const doFetch = cfg.fetcher ?? fetch;
+  const res = await doFetch(`${cfg.url}${path}`, {
     method,
     headers: {
       ...authHeaders(cfg),
@@ -338,6 +343,18 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
 }
 
 // ---------------------------------------------------------------------------
+// Client resolution — shared by ensureDevSite (below) and the real intake
+// path (pipeline.ts's ensureSiteFromIntake). Reuse-or-create by name.
+// ---------------------------------------------------------------------------
+
+export async function ensureClient(cfg: SupabaseConfig, name: string): Promise<string> {
+  const existing = await rest<Array<{ id: string }>>(cfg, "GET", `/rest/v1/clients?name=eq.${encodeURIComponent(name)}&select=id&limit=1`);
+  if (existing[0]?.id) return existing[0].id;
+  const created = await rest<Array<{ id: string }>>(cfg, "POST", "/rest/v1/clients", [{ name }]);
+  return created[0].id;
+}
+
+// ---------------------------------------------------------------------------
 // Dev convenience: resolve (or create) a client + site so an end-to-end smoke
 // test doesn't require touching the dashboard. Idempotent by domain.
 // ---------------------------------------------------------------------------
@@ -346,21 +363,9 @@ export async function ensureDevSite(
   cfg: SupabaseConfig,
   opts: { clientName: string; domain: string; rootUrl?: string; feedUrl?: string },
 ): Promise<string> {
-  // 1. Client (by name)
-  const existingClients = await rest<Array<{ id: string }>>(
-    cfg,
-    "GET",
-    `/rest/v1/clients?name=eq.${encodeURIComponent(opts.clientName)}&select=id&limit=1`,
-  );
-  let clientId = existingClients[0]?.id;
-  if (!clientId) {
-    const created = await rest<Array<{ id: string }>>(cfg, "POST", "/rest/v1/clients", [
-      { name: opts.clientName },
-    ]);
-    clientId = created[0].id;
-  }
+  const clientId = await ensureClient(cfg, opts.clientName);
 
-  // 2. Site (by domain, within that client)
+  // Site (by domain, within that client)
   const existingSites = await rest<Array<{ id: string }>>(
     cfg,
     "GET",
@@ -378,6 +383,60 @@ export async function ensureDevSite(
     },
   ]);
   return createdSites[0].id;
+}
+
+// ---------------------------------------------------------------------------
+// Real intake site upsert (pipeline.ts's ensureSiteFromIntake). Unlike
+// ensureDevSite, this dedups on (client_id, root_url) — the ACTUAL `sites`
+// UNIQUE constraint (ensureDevSite dedups by domain, which is a close but
+// not identical match) — and writes the onboarding-declared fields a real
+// intake form collects. On a repeat submission for the same client+root_url,
+// PATCHes only the fields actually provided this time, rather than silently
+// ignoring an updated answer — a resubmission is a real edit, not a no-op.
+// ---------------------------------------------------------------------------
+
+export interface IntakeSiteFields {
+  domain: string;
+  rootUrl: string;
+  platform?: string;
+  feedUrl?: string;
+  identityLinkingOptOut?: boolean;
+  merchantCenterAccountReady?: boolean;
+  merchantCenterFeedsConfigured?: boolean;
+  ucpEarlyAccessStatus?: "not_applied" | "pending" | "approved";
+}
+
+export async function upsertIntakeSite(cfg: SupabaseConfig, clientId: string, fields: IntakeSiteFields): Promise<string> {
+  const patch: Record<string, unknown> = {};
+  if (fields.platform !== undefined) patch.platform = fields.platform;
+  if (fields.feedUrl !== undefined) patch.feed_url = fields.feedUrl;
+  if (fields.identityLinkingOptOut !== undefined) patch.identity_linking_opt_out = fields.identityLinkingOptOut;
+  if (fields.merchantCenterAccountReady !== undefined) patch.merchant_center_account_ready = fields.merchantCenterAccountReady;
+  if (fields.merchantCenterFeedsConfigured !== undefined) patch.merchant_center_feeds_configured = fields.merchantCenterFeedsConfigured;
+  if (fields.ucpEarlyAccessStatus !== undefined) patch.ucp_early_access_status = fields.ucpEarlyAccessStatus;
+
+  const existing = await rest<Array<{ id: string }>>(
+    cfg,
+    "GET",
+    `/rest/v1/sites?client_id=eq.${clientId}&root_url=eq.${encodeURIComponent(fields.rootUrl)}&select=id&limit=1`,
+  );
+  if (existing[0]?.id) {
+    if (Object.keys(patch).length > 0) {
+      await rest(cfg, "PATCH", `/rest/v1/sites?id=eq.${existing[0].id}`, patch);
+    }
+    return existing[0].id;
+  }
+
+  const created = await rest<Array<{ id: string }>>(cfg, "POST", "/rest/v1/sites", [
+    {
+      client_id: clientId,
+      domain: fields.domain,
+      root_url: fields.rootUrl,
+      is_ecommerce: true,
+      ...patch,
+    },
+  ]);
+  return created[0].id;
 }
 
 // ---------------------------------------------------------------------------
