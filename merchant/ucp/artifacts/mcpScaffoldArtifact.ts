@@ -63,6 +63,14 @@ const PLATFORM_PROVIDERS: Record<string, (ctx: ArtifactContext) => ScaffoldProvi
   custom: buildCustomScaffold,
 };
 
+/** Platforms with a registered scaffold provider — the single source of
+ *  truth manifestArtifact.ts reads to know which stores will receive a
+ *  catalog+cart-only MCP server (never checkout), so it never auto-adds a
+ *  checkout capability declaration that artifact wouldn't back up. Derived
+ *  from PLATFORM_PROVIDERS so a new provider is automatically covered here
+ *  without a second edit. */
+export const SCAFFOLD_PLATFORMS: ReadonlySet<string> = new Set(Object.keys(PLATFORM_PROVIDERS));
+
 function byKey(signals: SignalRow[]): Map<string, SignalRow> {
   return new Map(signals.map((s) => [s.signal_key, s]));
 }
@@ -72,11 +80,17 @@ export function generateMcpScaffoldArtifact(ctx: ArtifactContext): ArtifactDraft
   if (!provider) return null; // known-platform gate, never guessed — see file header
 
   const sig = byKey(ctx.signals);
-  const checkout = sig.get("capability_checkout_declared");
   const cart = sig.get("capability_cart_declared");
   const catalog = sig.get("capability_catalog_declared");
 
-  const allAlreadyPassing = [checkout, cart, catalog].every((s) => s?.status === "pass");
+  // checkout is deliberately excluded from this gate: this scaffold never
+  // implements or declares the checkout capability (payment stays with the
+  // merchant, handed off via the cart's continue_url — see
+  // scaffold/shared.ts's ucpConformanceDisclosure()), so
+  // capability_checkout_declared can never reach "pass" for a store using
+  // it. Including it here would mean this generator never stops claiming
+  // there's work to do, even for a store that's fully, correctly deployed.
+  const allAlreadyPassing = [cart, catalog].every((s) => s?.status === "pass");
   if (allAlreadyPassing) return null; // agent-shopability already declared+working; nothing to add
 
   const scaffold = provider(ctx);
@@ -87,10 +101,10 @@ export function generateMcpScaffoldArtifact(ctx: ArtifactContext): ArtifactDraft
     must_complete: [
       "Deploy mcp-server/ to a host you control (Node 18+) — Adeptra does not host this for you.",
       ...scaffold.setupMustComplete,
-      "Once deployed, point your UCP manifest's dev.ucp.shopping service endpoint at this server's deployed URL and re-run analysis — that's what turns checkout/cart/catalog capability signals from \"enabled once deployed\" into a genuine pass.",
+      "Once deployed, point your UCP manifest's dev.ucp.shopping service endpoint at this server's deployed URL and re-run analysis — that's what turns cart/catalog capability signals from \"enabled once deployed\" into a genuine pass. Checkout is deliberately not implemented — see the changelog's flagged notes.",
     ],
     flagged: [
-      "Payment is intentionally NOT handled by this server — begin_checkout returns the cart summary and a checkout URL for handoff; this is a deliberate boundary, not a gap.",
+      "Payment is intentionally NOT handled by this server — this is a deliberate boundary, not a gap. The cart response's continue_url hands off to your own checkout; this server never declares or implements the UCP checkout capability.",
       ...scaffold.extraFlagged,
     ],
   };

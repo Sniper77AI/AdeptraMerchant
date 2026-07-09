@@ -70,6 +70,7 @@ export interface IntakeInput {
   platform?: string;
   feedUrl?: string;
   identityLinkingOptOut?: boolean;
+  checkoutHandoffOptIn?: boolean;
   merchantCenter?: {
     accountReady?: boolean;
     feedsConfigured?: boolean;
@@ -97,6 +98,7 @@ export async function ensureSiteFromIntake(input: IntakeInput): Promise<{ siteId
     platform: input.platform,
     feedUrl: input.feedUrl,
     identityLinkingOptOut: input.identityLinkingOptOut,
+    checkoutHandoffOptIn: input.checkoutHandoffOptIn,
     merchantCenterAccountReady: input.merchantCenter?.accountReady,
     merchantCenterFeedsConfigured: input.merchantCenter?.feedsConfigured,
     ucpEarlyAccessStatus: input.merchantCenter?.earlyAccessStatus,
@@ -142,6 +144,7 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
 
     const capabilitySignals = await runCapabilityChecks(manifest, httpFetcher, {
       identityLinkingOptOut: site.identityLinkingOptOut,
+      checkoutHandoffOptIn: site.checkoutHandoffOptIn,
     });
     const { feed, signals: feedSignals } = await runFeedChecks(site.feedUrl, httpFetcher, site.rootUrl ?? undefined);
     if (feed) {

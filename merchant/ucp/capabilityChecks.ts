@@ -66,18 +66,48 @@ function catalogCapability(m: ManifestState): { entries: any[]; matchedKeys: str
 // Signal functions (pure) — one per signal_key in Category 3
 // ---------------------------------------------------------------------------
 
-export function sig_capability_checkout_declared(m: ManifestState): SignalRow {
+export function sig_capability_checkout_declared(m: ManifestState, opts?: { checkoutHandoffOptIn?: boolean }): SignalRow {
   const cfg = W.checkout;
   const entries = capabilityEntries(m, "dev.ucp.shopping.checkout");
   const declared = entries.length > 0;
   const version: string | null = entries.find((e) => e?.version)?.version ?? null;
   const schemaPresent = entries.some((e) => !!e?.schema);
+  const handoffOptIn = !!opts?.checkoutHandoffOptIn;
+
+  // UCP's own checkout capability is not the only conformant path: a store
+  // can adopt catalog+cart only, with payment handed off via the cart's
+  // continue_url to the merchant's own checkout — a spec-sanctioned profile
+  // (cart.md: "basket building without the complexity of checkout"; payment
+  // = "None"; capabilities are independently adoptable), not a compromise.
+  // A store correctly choosing that profile will have no checkout capability
+  // declared at all — the SAME manifest shape as a store that just hasn't
+  // gotten around to declaring checkout yet. Those two cases can't be told
+  // apart from the manifest alone, so this only ever returns not_applicable
+  // on an explicit merchant attestation (sites.checkout_handoff_opt_in) —
+  // never inferred from ctx.platform or from cart being declared — so this
+  // signal's status is always a merchant decision, never a side effect of
+  // which artifact Adeptra happened to generate.
+  if (!declared && handoffOptIn) {
+    return {
+      pillar: "ucp",
+      category: CATEGORY,
+      signal_key: "capability_checkout_declared",
+      status: "not_applicable",
+      weight: cfg.weight,
+      score_contribution: contribution(cfg.weight, "not_applicable"),
+      impact: cfg.impact,
+      effort: cfg.effort,
+      evidence_json: { declared, version, schema_present: schemaPresent, checkout_handoff_opt_in: true },
+      fix_summary: null,
+    };
+  }
 
   let status: SignalRow["status"];
   let fix: string | null = null;
   if (!declared) {
     status = "fail";
-    fix = "Declare dev.ucp.shopping.checkout in ucp.capabilities with a version and schema.";
+    fix =
+      "Declare dev.ucp.shopping.checkout in ucp.capabilities with a version and schema — OR, if you're intentionally handling payment on your own checkout via a cart continue_url handoff (a valid, spec-sanctioned catalog+cart-only profile), attest to that choice so this signal reflects it instead of failing.";
   } else if (version && schemaPresent) {
     status = "pass";
   } else {
@@ -96,7 +126,7 @@ export function sig_capability_checkout_declared(m: ManifestState): SignalRow {
     score_contribution: contribution(cfg.weight, status),
     impact: cfg.impact,
     effort: cfg.effort,
-    evidence_json: { declared, version, schema_present: schemaPresent },
+    evidence_json: { declared, version, schema_present: schemaPresent, checkout_handoff_opt_in: handoffOptIn },
     fix_summary: fix,
   };
 }
@@ -298,10 +328,10 @@ export async function checkEndpointReachability(
 export async function runCapabilityChecks(
   manifest: ManifestState,
   fetcher: Fetcher,
-  opts?: { identityLinkingOptOut?: boolean },
+  opts?: { identityLinkingOptOut?: boolean; checkoutHandoffOptIn?: boolean },
 ): Promise<SignalRow[]> {
   return [
-    sig_capability_checkout_declared(manifest),
+    sig_capability_checkout_declared(manifest, { checkoutHandoffOptIn: opts?.checkoutHandoffOptIn }),
     sig_capability_cart_declared(manifest),
     sig_capability_catalog_declared(manifest),
     sig_capability_fulfillment_declared(manifest),

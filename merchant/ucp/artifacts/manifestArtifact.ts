@@ -21,10 +21,20 @@
  * identity_linking is never auto-added/auto-filled — it's a merchant
  * preference signal, not a structural gap — flagged only, on both fail and
  * partial (a guessed scope is still a guess).
+ *
+ * CHECKOUT IS NEVER AUTO-ADDED FOR SCAFFOLD-PLATFORM STORES: when
+ * ctx.platform has a registered mcp_scaffold provider (SCAFFOLD_PLATFORMS,
+ * from mcpScaffoldArtifact.ts), that store's generated MCP server
+ * deliberately implements catalog + cart only — never checkout — so
+ * declaring dev.ucp.shopping.checkout here would claim a capability the
+ * server can't back up. Flagged instead of auto-fixed, same honesty
+ * discipline as identity_linking, for a different reason (a real, deliberate
+ * scope boundary rather than an unguessable merchant preference).
  */
 
 import { CURRENT_UCP_VERSION, VALID_AUTHORITY_HOSTS, ALLOWED_TRANSPORTS, type SignalRow } from "../manifestChecks.ts";
 import type { ArtifactContext, ArtifactDraft, ArtifactChangelog } from "./types.ts";
+import { SCAFFOLD_PLATFORMS } from "./mcpScaffoldArtifact.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical values (verified against signal-specs.md — the spec doc gives the
@@ -141,7 +151,7 @@ function fixAuthorityInContainer(container: any, containerLabel: string, canonic
 // ---------------------------------------------------------------------------
 
 export function generateManifestArtifact(ctx: ArtifactContext): ArtifactDraft | null {
-  const { manifest, signals } = ctx;
+  const { manifest, signals, platform } = ctx;
   const sig = byKey(signals);
   const manifestPresent = sig.get("ucp_manifest_present");
   const versionDeclared = sig.get("ucp_manifest_version_declared");
@@ -241,9 +251,28 @@ export function generateManifestArtifact(ctx: ArtifactContext): ArtifactDraft | 
   // capability (e.g. catalog declared via .search/.lookup sub-capabilities)
   // is preserved byte-for-byte, never flattened/replaced.
   ucp.capabilities = ucp.capabilities ?? {};
+  const scaffoldWillHandhoffCheckout = !!platform && SCAFFOLD_PLATFORMS.has(platform);
   for (const name of Object.keys(CAPABILITY_KEYS) as CapabilityName[]) {
     const s = capabilitySignals[name];
     if (!needsFix(s)) continue;
+
+    // checkout is a deliberate exception: a store on a platform with a
+    // registered mcp_scaffold provider (woocommerce/wix/custom) will get a
+    // catalog+cart-only MCP server that never implements checkout — payment
+    // is handed off via the cart's continue_url instead (see
+    // mcpScaffoldArtifact.ts / scaffold/shared.ts's ucpConformanceDisclosure).
+    // Auto-adding a checkout capability declaration here would make the
+    // manifest claim a capability the generated server can't back up —
+    // exactly the "looks-compliant-but-isn't" artifact this generator's own
+    // header guards against. Flagged instead, regardless of whether the
+    // existing entry is missing (fail) or partially configured (partial).
+    if (name === "checkout" && scaffoldWillHandhoffCheckout) {
+      changelog.flagged.push(
+        `dev.ucp.shopping.checkout was NOT declared/corrected here: this store's platform ("${platform}") gets an Adeptra-generated MCP server that deliberately implements catalog + cart only (payment handed off via the cart's continue_url, never checkout) — declaring checkout in the manifest would claim a capability that server doesn't provide. If you support checkout some other way, declare it manually; if you're intentionally using the handoff profile, attest to that via the checkout-handoff opt-in so this scores correctly instead of failing.`,
+      );
+      continue;
+    }
+
     const key = CAPABILITY_KEYS[name];
     const existing: any[] = Array.isArray(ucp.capabilities[key]) ? ucp.capabilities[key] : [];
 

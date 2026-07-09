@@ -318,6 +318,7 @@ export interface SiteConfig {
   rootUrl: string | null;
   platform: string | null;
   identityLinkingOptOut: boolean;
+  checkoutHandoffOptIn: boolean;
   feedUrl: string | null;
   merchantCenterAccountReady: boolean | null;
   merchantCenterFeedsConfigured: boolean;
@@ -332,6 +333,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
       root_url: string | null;
       platform: string | null;
       identity_linking_opt_out: boolean;
+      checkout_handoff_opt_in: boolean;
       feed_url: string | null;
       merchant_center_account_ready: boolean | null;
       merchant_center_feeds_configured: boolean;
@@ -340,7 +342,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
   >(
     cfg,
     "GET",
-    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,platform,identity_linking_opt_out,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
+    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,platform,identity_linking_opt_out,checkout_handoff_opt_in,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
   );
   if (!rows[0]) throw new Error(`site not found: ${siteId}`);
   return {
@@ -349,6 +351,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
     rootUrl: rows[0].root_url,
     platform: rows[0].platform,
     identityLinkingOptOut: rows[0].identity_linking_opt_out,
+    checkoutHandoffOptIn: rows[0].checkout_handoff_opt_in,
     feedUrl: rows[0].feed_url,
     merchantCenterAccountReady: rows[0].merchant_center_account_ready,
     merchantCenterFeedsConfigured: rows[0].merchant_center_feeds_configured,
@@ -415,6 +418,7 @@ export interface IntakeSiteFields {
   platform?: string;
   feedUrl?: string;
   identityLinkingOptOut?: boolean;
+  checkoutHandoffOptIn?: boolean;
   merchantCenterAccountReady?: boolean;
   merchantCenterFeedsConfigured?: boolean;
   ucpEarlyAccessStatus?: "not_applied" | "pending" | "approved";
@@ -425,6 +429,7 @@ export async function upsertIntakeSite(cfg: SupabaseConfig, clientId: string, fi
   if (fields.platform !== undefined) patch.platform = fields.platform;
   if (fields.feedUrl !== undefined) patch.feed_url = fields.feedUrl;
   if (fields.identityLinkingOptOut !== undefined) patch.identity_linking_opt_out = fields.identityLinkingOptOut;
+  if (fields.checkoutHandoffOptIn !== undefined) patch.checkout_handoff_opt_in = fields.checkoutHandoffOptIn;
   if (fields.merchantCenterAccountReady !== undefined) patch.merchant_center_account_ready = fields.merchantCenterAccountReady;
   if (fields.merchantCenterFeedsConfigured !== undefined) patch.merchant_center_feeds_configured = fields.merchantCenterFeedsConfigured;
   if (fields.ucpEarlyAccessStatus !== undefined) patch.ucp_early_access_status = fields.ucpEarlyAccessStatus;

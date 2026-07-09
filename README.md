@@ -20,6 +20,12 @@ merchant/
       20260706020000_sites_merchant_center_eligibility.sql # Category 6 onboarding attestation columns
       20260706030000_add_artifacts_changelog_json.sql  # artifacts.changelog_json (persists ArtifactChangelog)
       20260707000000_add_mcp_scaffold_artifact_type.sql # artifacts.artifact_type CHECK constraint += 'mcp_scaffold'
+      20260709000000_sites_checkout_handoff_opt_in.sql  # sites.checkout_handoff_opt_in — same shape/reasoning as
+                                                        # identity_linking_opt_out: an explicit merchant attestation,
+                                                        # never inferred from platform, that lets
+                                                        # capability_checkout_declared score not_applicable instead
+                                                        # of fail for a store deliberately using the catalog+cart-only
+                                                        # UCP profile (payment via the cart's continue_url handoff)
       # Storage bucket "merchant-exports" (private) and exports table predate this — see Export & Delivery below
       # sites.platform (TEXT, nullable, no CHECK) predates this too — set manually until onboarding writes it
   ucp/
@@ -120,21 +126,33 @@ merchant/
                            # FIRST — see Open items below for the import-order bug this fixed originally,
                            # now fixed once here for every platform instead of per-platform),
                            # TOOL_ANNOTATIONS_NOTE (the MCP SDK's own "hints, not a security boundary"
-                           # caveat, quoted verbatim, inserted once per generated server.ts), and
-                           # ucpConformanceDisclosure() (the honest "what this server is, and isn't"
-                           # README section every provider shares — see Open items below for why it
-                           # exists: UCP's own MCP transport binding turned out to prescribe different
-                           # tool names, a session-based cart model, HTTP transport, and a payment-
-                           # carrying complete_checkout tool this codebase will never implement). Also
-                           # the ScaffoldProvider interface every provider module implements: { files,
-                           # addedLines, setupMustComplete, extraFlagged }
-        woocommerce.ts       # Provider — extracted unchanged from the original single-file generator.
-                           # Catalog search + cart building via WooCommerce's public Store API only
-                           # (/wp-json/wc/store/v1/* — never the admin /wc/v3/ API, never the Store
-                           # API's own /checkout endpoint; begin_checkout returns the cart + the
-                           # store's normal checkout URL for handoff). Byte-identical output to the
-                           # pre-refactor generator, proven by a golden-fixture regression test
-                           # (extended, not broken, by the later tool-annotations + UCP-disclosure work)
+                           # caveat, quoted verbatim), ucpConformanceDisclosure() (the honest "what this
+                           # server is, and isn't" README section — see Open items below: catalog is
+                           # fully UCP-conformant, cart is conformant on names/shapes/session but not
+                           # transport, checkout is permanently out of scope), and — the bulk of this
+                           # round's work — mcpToolsTs(), which generates ONE shared src/mcpTools.ts
+                           # file (byte-identical across all three providers) implementing UCP's actual
+                           # canonical catalog+cart tool surface: search_catalog/lookup_catalog/
+                           # get_product/create_cart/get_cart/update_cart/cancel_cart, a real session
+                           # state machine (one platform cart, ever — active/canceled, create_cart
+                           # errors rather than resets on an already-active cart, cancel_cart empties
+                           # the real platform cart and marks the session gone), and a diff-and-
+                           # reconcile shim for update_cart's UCP-mandated full-replacement semantics
+                           # (every provider's real API is incremental) — reconciling to the minimum
+                           # set of primitive calls, zero calls when nothing changed, and rejecting a
+                           # submitted line id that doesn't match any current line as an error rather
+                           # than silently adding it. Each provider supplies only primitives
+                           # (getCartRaw/addItem/setItemQty/removeItem/emptyCart/checkoutUrl); the
+                           # diff/session logic itself is written once. Also the ScaffoldProvider
+                           # interface every provider module implements: { files, addedLines,
+                           # setupMustComplete, extraFlagged }
+        woocommerce.ts       # Provider — catalog search + cart building via WooCommerce's public
+                           # Store API only (/wp-json/wc/store/v1/* — never the admin /wc/v3/ API,
+                           # never the Store API's own /checkout endpoint). Supplies primitives to
+                           # mcpTools.ts; server.ts itself is now thin glue (wires primitives into
+                           # registerUcpTools(), nothing else). checkoutUrl() is a static computed URL,
+                           # not an API call. Live-verified npm start caught and fixed a latent bug
+                           # this round — see Open items below.
         wix.ts                # Provider #2 — a deployable Wix MCP shopping-server (raw REST against
                            # Wix's eCommerce API, no Wix SDK dependency). Structurally different
                            # boundary problem than WooCommerce: Wix's API CAN create checkouts/orders,
@@ -149,26 +167,32 @@ merchant/
                            # with a plain-English message if the site is on Catalog V1 — Wix's
                            # V1/V3 catalog split is not backward-compatible and this scaffold only
                            # supports V3. Also discloses that Wix's OAuth token endpoint is currently
-                           # Developer Preview and may change. See Open items below for two real
-                           # startup-exit bugs a live npm start caught and fixed.
+                           # Developer Preview and may change. checkoutUrl() creates a REAL Wix-side
+                           # checkout object (not free) — mcpTools.ts's continue_url caching (lazy,
+                           # invalidated only on an actual line-item change, skipped for an empty cart)
+                           # is what keeps this from being called on every single cart read.
+                           # add_to_cart always uses a product's first variant (a real, disclosed
+                           # simplification — no variant selection exposed).
         custom.ts             # Provider #3 — for bespoke stores with no standard API to write a real
                            # client against. NOT a working server: a ~80%-complete REFERENCE
                            # IMPLEMENTATION for a developer (the merchant's, or Adeptra's own setup
-                           # service) to finish. src/server.ts (complete, MCP tools + the payment
-                           # boundary) is generated in full; src/types.ts is the StoreAdapter contract
-                           # (7 methods, deliberately no payment/order/admin method — that absence IS
-                           # the boundary, since there's no real API call to structurally forbid it
-                           # the way WooCommerce/Wix do); src/store.ts stubs every method with a
-                           # literal `throw new Error("IMPLEMENT-THIS: ...")` and a worked-example
-                           # doc comment. server.ts refuses to start while any method is still
-                           # stubbed — detected by reading each method's own source text for the
-                           # literal marker (Function.prototype.toString(), never invoking the
-                           # adapter) rather than a live call (risks false positives/side effects on
-                           # a partially-done adapter) or a separate boolean flag (can drift out of
-                           # sync) — live-verified: implementing methods one at a time correctly
-                           # narrows the startup failure's list of remaining stubs, and the server
-                           # starts cleanly once all seven are done. resolves_signal_keys is always
-                           # empty here too, even more clearly than the other providers.
+                           # service) to finish. src/server.ts (complete, wires StoreAdapter into
+                           # registerUcpTools()) is generated in full; src/types.ts is the StoreAdapter
+                           # contract (8 methods this round — the 7 from before plus emptyCart, added
+                           # for the session state machine's create_cart/cancel_cart guarantees —
+                           # deliberately no payment/order/admin method, that absence IS the boundary,
+                           # since there's no real API call to structurally forbid it the way
+                           # WooCommerce/Wix do); src/store.ts stubs every method with a literal
+                           # throw new Error("IMPLEMENT-THIS: ...") and a worked-example doc comment.
+                           # server.ts refuses to start while any method is still stubbed — detected by
+                           # reading each method's own source text for the literal marker
+                           # (Function.prototype.toString(), never invoking the adapter) rather than a
+                           # live call (risks false positives/side effects on a partially-done adapter)
+                           # or a separate boolean flag (can drift out of sync) — live-verified:
+                           # implementing methods one at a time correctly narrows the startup failure's
+                           # list of remaining stubs, and the server starts cleanly once all eight are
+                           # done. resolves_signal_keys is always empty here too, even more clearly
+                           # than the other providers.
       index.ts             # runArtifacts(ctx) orchestrator — async (awaits each generator so the
                            # sync manifest/feed/mcp_scaffold generators and the async content_rewrite
                            # generator share one call site); sibling modules (jsonld, llms_txt,
@@ -220,47 +244,58 @@ merchant/
                            # httpFetcher (stubbed fetch)
     test_artifacts.ts      # Manifest generator: no-manifest scaffold, partial-manifest preserve+
                            # correct (incl. byte-for-byte sub-capability preservation), closed-loop
-                           # validation against the real signal functions, purity. Feed generator:
-                           # full/partial supplemental feed, pass→null, no-feed defensive handling,
-                           # purity, consistency-signal flag-only. Content-rewrite generator (mock
-                           # Fetcher + mock LlmClient, no real I/O): STRUCTURE with grounded output,
-                           # FLAG-on-fail (fetcher/LLM never called), FLAG for sparse attributes and
-                           # title/description contradiction, the anti-fabrication gate rejecting a
-                           # hallucinated value, ctx.llm null degrading gracefully, deterministic
-                           # @context/@type injection even when the model omits it, determinism +
-                           # async signature. mcp_scaffold generator: platform-gate (undeclared/
-                           # unsupported → null; woocommerce/wix/custom + all capabilities already
-                           # passing → null; unrecognized platform never falls through to a guess),
-                           # full file-tree generation for all three providers, the honesty/boundary
-                           # check per platform (Store API only for WooCommerce, no order/payment
-                           # endpoints for Wix, no payment/order/admin method in Custom's StoreAdapter
-                           # contract — asserted against comment-stripped code so the files' own
-                           # explanatory comments about what they DON'T do can't false-positive the
-                           # check), no real secrets/URLs baked into src/*, the ESM import-order
-                           # regression test for loadEnv.ts (shared across all three — a byte-
-                           # identical-across-platforms check proves it's genuinely shared, not
-                           # duplicated), Wix's README content checks (scope disclosure appears
-                           # BEFORE the setup walkthrough, Catalog V1/V3 and pre-headless gotchas
-                           # documented, Developer Preview disclosed), Wix's Catalog V3 startup-check
-                           # assertion, Custom's honesty checks (README's not-a-runnable-server
-                           # warning is the first line; every store.ts method's IMPLEMENT-THIS marker
-                           # lives inside the thrown string literal, not a comment, verified by
-                           # stripping comments first and confirming the marker survives; the startup
-                           # check reads source text via .toString(), never invokes the adapter, and
-                           # names the still-stubbed methods explicitly), tool-annotation checks
-                           # (readOnlyHint/destructiveHint/idempotentHint/openWorldHint correct on
-                           # every tool in all three providers, plus the MCP SDK's own "hints, not a
-                           # security boundary" caveat quoted verbatim), purity for all three
-                           # providers, and REGRESSION tests comparing the WooCommerce and Wix output
-                           # against golden fixtures (test_fixtures/mcp_scaffold_woocommerce_golden.json,
-                           # mcp_scaffold_wix_golden.json) captured before each round of changes —
-                           # byte-identical except the disclosed, precisely-asserted differences from
-                           # that round (the original platform-generalization refactor's loadEnv.ts/
-                           # flagged-line generalizations; the later tool-annotations + UCP-conformance-
-                           # disclosure additions, proven by stripping the annotations back out of
-                           # server.ts and comparing the untouched suffix of README.md byte-for-byte).
-                           # Plus an orchestrator integration check that all four generators wire into
-                           # the now-async runArtifacts(ctx) together
+                           # validation against the real signal functions, purity, PLUS: for a
+                           # scaffold-registered platform, checkout is flagged (not auto-added) and
+                           # excluded from resolves_signal_keys, while a store with no platform
+                           # declared is unaffected (still auto-adds checkout the old way). Feed
+                           # generator: full/partial supplemental feed, pass→null, no-feed defensive
+                           # handling, purity, consistency-signal flag-only. Content-rewrite generator
+                           # (mock Fetcher + mock LlmClient, no real I/O): STRUCTURE with grounded
+                           # output, FLAG-on-fail, anti-fabrication gate, deterministic @context/@type
+                           # injection, determinism + async signature. mcp_scaffold generator:
+                           # platform-gate (undeclared/unsupported → null; woocommerce/wix/custom + a
+                           # capability gap → their own tree; cart+catalog passing → null REGARDLESS
+                           # of checkout's status — the gate-bug-fix regression test, since checkout
+                           # can never reach "pass" for a scaffold platform); the canonical UCP tool
+                           # surface present (search_catalog/lookup_catalog/get_product/create_cart/
+                           # get_cart/update_cart/cancel_cart) and every retired incremental name
+                           # (search_products/add_to_cart/update_cart_item/remove_cart_item/
+                           # begin_checkout) absent, in all three providers; meta["ucp-agent"] required
+                           # (not optional); not_found returned as a JSON-RPC success business outcome,
+                           # never thrown; structuredContent present; source-level session-state-
+                           # machine + diff-shim assertions (full runtime behavior is exercised
+                           # separately — see below); per-platform BOUNDARY re-assertions (Store API
+                           # only for WooCommerce, no order/payment endpoint for Wix, no payment/order/
+                           # admin method in Custom's now-8-method StoreAdapter contract); Custom's
+                           # honesty checks (not-runnable warning, IMPLEMENT-THIS markers, the
+                           # source-text-not-live-invoke startup check); tool annotations on the new
+                           # surface; the UCP-conformance README's exact three-point structure (catalog
+                           # conformant; cart conformant except transport, with cart-mcp.md's own HTTP-
+                           # streaming requirement quoted; checkout deliberately absent) and a check
+                           # that "UCP cart conformant" is never claimed unqualified; a manifest+
+                           # mcp_scaffold integration test proving the generated manifest declares
+                           # cart+catalog but never checkout; capabilityChecks.ts tests for the
+                           # checkout-handoff opt-in (not_applicable ONLY on the explicit attestation,
+                           # never inferred from platform or cart); REGRESSION tests against golden
+                           # fixtures for all three providers (test_fixtures/mcp_scaffold_
+                           # {woocommerce,wix,custom}_golden.json, re-captured for this round's
+                           # baseline); and purity for all three. Plus an orchestrator integration
+                           # check that all four generators wire into the async runArtifacts(ctx)
+                           # together.
+                           #
+                           # The session state machine + diff-and-reconcile shim's actual RUNTIME
+                           # behavior (not just generated source text) is verified separately, since
+                           # executing the generated mcpTools.ts needs the real MCP SDK + zod — deps
+                           # this project's own zero-dependency test process deliberately doesn't
+                           # install. A one-off harness (built and run against a real npm-installed
+                           # copy of a generated scaffold, not committed) drove the compiled
+                           # registerUcpTools() against fake in-memory primitives through 32 cases:
+                           # add/remove/quantity-change, the same product as two separate line items,
+                           # remove+add together, zero platform calls when nothing changed, quantity<1
+                           # rejected at the zod schema boundary, a submitted line id that doesn't
+                           # match any current line erroring rather than silently adding, and the full
+                           # create→active-error→cancel→not_found→recreate session lifecycle — all 32
+                           # passed on the first run.
     export/
       reportBuilder.ts     # PURE: turns one run's fetched data into a BundlePlan — a markdown
                            # report, a standalone self-contained report.html (inline CSS, no
@@ -674,6 +709,62 @@ live-verified against two real stores (skims.com, gymshark.com).**
       no stack trace; implementing methods one at a time in the compiled output correctly narrows the
       failure message to only the remaining stubs (no false positives on finished methods); and the
       server starts cleanly once all seven are done.
+- [x] Artifact generation, artifact #4 continued — the UCP catalog + cart CONFORMANCE profile
+      (2026-07-09): all three `mcp_scaffold` providers now implement UCP's actual canonical
+      catalog + cart tool surface (`search_catalog`/`lookup_catalog`/`get_product`/`create_cart`/
+      `get_cart`/`update_cart`/`cancel_cart`) instead of the earlier bespoke, incremental tool set —
+      reversing the prior "honest divergence" position once research established that UCP's own cart
+      capability is explicitly usable without checkout ("basket building without the complexity of
+      checkout"), that capabilities are independently adoptable, and that `continue_url` is UCP's own
+      sanctioned cart-to-checkout handoff mechanism. Checkout remains permanently out of scope — the
+      generated manifest declares catalog + cart only, and `capabilityChecks.ts`'s
+      `capability_checkout_declared` now returns `not_applicable` ONLY on an explicit merchant
+      attestation (`sites.checkout_handoff_opt_in`, migration `20260709000000_sites_checkout_handoff_
+      opt_in.sql`, same shape/reasoning as `identity_linking_opt_out`) — never inferred from platform
+      or from cart being declared, so the signal only goes N/A on merchant intent, never as a side
+      effect of which artifact Adeptra generated. The bulk of the new logic lives once in
+      `scaffold/shared.ts`'s `mcpToolsTs()`, generating a byte-identical `src/mcpTools.ts` for all
+      three providers: a real session state machine (one platform cart, ever — `create_cart` errors
+      rather than silently resetting an already-active cart; `cancel_cart` empties the real platform
+      cart and marks the session gone; every cart tool returns `not_found`, as a JSON-RPC success
+      business outcome matching UCP's own error shape, never thrown, once canceled) and a diff-and-
+      reconcile shim for `update_cart`'s UCP-mandated full-replacement semantics (every platform's
+      real API is incremental) — matching submitted line items to existing ones by id, treating
+      id-less items as new adds, treating omitted current items as removals, issuing zero platform
+      calls when nothing changed, and rejecting a submitted id that doesn't match any current line as
+      an error rather than silently adding it. `quantity` has a hard schema minimum of 1 (verified
+      directly against UCP's own `line_item.json` — zero is out-of-range, not a removal sentinel).
+      Each provider supplies only primitives (`getCartRaw`/`addItem`/`setItemQty`/`removeItem`/
+      `emptyCart`/`checkoutUrl`); Wix's `checkoutUrl()` creates a real Wix-side checkout object (not
+      free), so `continue_url` is minted lazily and cached, invalidated only on an actual line-item
+      change and skipped entirely for an empty cart. Custom's `StoreAdapter` contract gained an eighth
+      method, `emptyCart`, for the same session guarantees — still with no payment/order/admin method.
+      Verified two ways: static source-level checks in `test_artifacts.ts` (tool names, required
+      `meta["ucp-agent"]`, `structuredContent`, annotations on the new surface, the disclosure
+      section's exact three-point structure — catalog conformant; cart conformant on names/shapes/
+      session but NOT transport, since `cart-mcp.md`'s own conformance section requires HTTP
+      streaming and this server uses stdio; checkout deliberately absent — with a test asserting "UCP
+      cart conformant" is never claimed unqualified), and a separate RUNTIME harness driving the
+      actual compiled `registerUcpTools()` against fake in-memory primitives through 32 cases (add/
+      remove/quantity-change, the same product as two distinct line items, remove+add together, zero
+      calls when unchanged, quantity<1 rejected at the schema boundary, an invalid line id erroring
+      not silently adding, and the full create→active-error→cancel→not_found→recreate lifecycle) —
+      all 32 passed on the first run. Also fixed a real gate bug found while making this change:
+      `mcpScaffoldArtifact.ts`'s "is there still work to do" check included checkout's status, which
+      — now that checkout can never reach `pass` for a scaffold-platform store — would have meant the
+      generator never stopped claiming work remained, even for a fully, correctly deployed store;
+      fixed to gate on cart+catalog only, with a regression test. And a real latent bug found via live
+      `npm start`: WooCommerce's `woocommerce.ts` threw at module load if `WOOCOMMERCE_STORE_URL` was
+      unset — the exact ES-module import-order race already found and fixed for Wix in an earlier
+      round (this file's own throw always won against `server.ts`'s friendlier check, since imports
+      evaluate before the importing module's own body runs), just never re-tested with a truly empty
+      `.env` after the original `loadEnv.ts` fix, so it shipped unnoticed until this round's live
+      verification caught it. Fixed the same way as Wix: no module-level throw, a lazy assertion
+      instead. All three scaffolds live-build-verified end to end (`npm install && npm run build &&
+      npm start`): WooCommerce and Wix each print one clean line on a missing env var (no stack
+      trace) and start/fail cleanly against a real (or realistically fake) endpoint; Custom correctly
+      lists all eight still-stubbed methods, narrows the list correctly as methods are implemented one
+      at a time, and starts cleanly once complete.
 - [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
@@ -884,49 +975,27 @@ live-verified against two real stores (skims.com, gymshark.com).**
   Re-verified live: starting with no `.env` at all now prints exactly the
   intended one-line message, no stack trace.
 
-- **True UCP MCP-transport binding conformance is a known, deliberate gap —
-  found while investigating an MCP best-practice tool-naming question
-  (2026-07-09).** All three `mcp_scaffold` providers use tool names
-  (`search_products`, `add_to_cart`, `begin_checkout`, etc.) and an
-  incremental single-cart model chosen for MCP client ergonomics, NOT UCP's
-  own canonical MCP transport binding. Read directly (not guessed) from
-  `docs/specification/{cart,catalog,checkout}-mcp.md` in
-  `Universal-Commerce-Protocol/ucp`: UCP prescribes specific tool names
-  (`create_cart`/`get_cart`/`update_cart`/`cancel_cart`,
-  `search_catalog`/`lookup_catalog`/`get_product`,
-  `create_checkout`/`get_checkout`/`update_checkout`/`complete_checkout`/
-  `cancel_checkout`), a session-based replace-style cart/checkout model
-  (`create_cart` returns an id; every later call submits the FULL desired
-  state under that id, wrapped in a required `meta.ucp-agent` envelope),
-  required HTTP transport with streaming (recommending RFC 9421 request
-  signing on checkout completion), and — the load-bearing part —
-  `complete_checkout` is defined to accept payment credentials and place the
-  order. That last one is a straight collision with this codebase's entire
-  payment-boundary design: WooCommerce's boundary is structural (the Store
-  API can't authorize payment), Wix's is disciplined (the client code simply
-  never calls a payment/order endpoint), and Custom's is contractual (the
-  `StoreAdapter` interface has no such method) — none of the three could
-  gain a `complete_checkout` tool without becoming the thing every one of
-  them was built specifically not to be. Verified this doesn't affect
-  Adeptra's own scoring: `capabilityChecks.ts`'s
-  `capability_checkout_declared`/`_cart_declared`/`_catalog_declared` only
-  check that the manifest JSON declares the capability with a version+schema,
-  and `endpoint_reachability` is a plain HTTP GET status probe — neither
-  requires literal MCP protocol conformance, so deploying today's scaffolds
-  and pointing the manifest at them genuinely does turn those signals into a
-  real pass. What it DOES mean: an agent expecting literal UCP MCP-transport
-  conformance (canonical tool names, session state, HTTP transport, a
-  payment-carrying checkout tool) cannot fully interoperate with any
-  `mcp_scaffold`-generated server as-is — disclosed explicitly in every
-  generated README's "About UCP protocol conformance" section rather than
-  left for a developer or agent to discover the hard way. **A follow-up
-  build closing gaps (1) canonical tool names + (2) the session-based cart
-  model — while permanently keeping gap (3), no `complete_checkout`, since
-  payment staying with the merchant is a settled policy, not an open
-  question — is under consideration but not yet started; gaps (1)+(2) are
-  closeable independently of (3), and full literal conformance only becomes
-  reachable at all if a payment layer is ever deliberately built, which is
-  the same product decision as (3), not a separate one.**
+- ~~True UCP MCP-transport binding conformance (tool names, session model)
+  is a known, deliberate gap.~~ **Closed 2026-07-09 for tool names, argument
+  shapes, and session semantics.** The follow-up build this entry originally
+  flagged as "under consideration" shipped: all three `mcp_scaffold`
+  providers now implement UCP's actual canonical catalog + cart tool surface
+  and session model (see the Status entry above for the full build). The
+  remaining, permanent conformance gap is narrower and precisely two things:
+  **cart requires HTTP streaming transport (we use stdio); checkout
+  capability is deliberately not implemented (payment stays with the
+  merchant).** Catalog has no outstanding gap — its own conformance
+  requirements don't include a transport requirement, and this scaffold
+  meets them fully. Both remaining gaps are disclosed explicitly in every
+  generated README's "About UCP protocol conformance" section, not left for
+  a developer or agent to discover the hard way. Full literal UCP MCP-
+  transport conformance (adding HTTP streaming) is closeable independently
+  of checkout — a real but separate scope decision (a hosted HTTP service
+  instead of "run npm start on a box you control") — and would still not
+  include `complete_checkout`, since payment staying with the merchant is a
+  settled policy, not an open question; that piece only becomes reachable at
+  all if a payment layer is ever deliberately built, which is a product
+  decision on its own, not a byproduct of closing the transport gap.
 
 - **Custom provider's `npm start` failure path live-verified with real
   partial-implementation behavior, not just the fully-stubbed case
@@ -943,3 +1012,36 @@ live-verified against two real stores (skims.com, gymshark.com).**
   partially-done adapter) or a separate boolean flag (which can't be
   proven correct this way at all, since it doesn't derive from the code's
   actual current behavior).
+
+- **Found and fixed while building the UCP catalog+cart conformance profile
+  (2026-07-09): `mcpScaffoldArtifact.ts`'s "is there still work to do" gate
+  included checkout's capability status.** Once checkout stopped being
+  implemented at all, `capability_checkout_declared` could never reach
+  `pass` for a scaffold-platform store — left as-is, the generator would
+  have kept claiming there was still work to do forever, even for a store
+  that had correctly, fully deployed the scaffold. Fixed by gating on
+  cart+catalog only (checkout's status no longer participates in "is
+  everything already passing"), with a regression test proving cart+catalog
+  passing plus checkout failing still returns `null`. Caught by reasoning
+  through the consequence of the design change, not by a live run — a
+  reminder that "this signal can now never reach X" is worth checking
+  against every place that assumed it could, not just the obvious ones.
+
+- **Found and fixed via live `npm start` while building the UCP catalog+cart
+  conformance profile (2026-07-09): WooCommerce's `woocommerce.ts` threw at
+  module load if `WOOCOMMERCE_STORE_URL` was unset.** The exact ES-module
+  import-order bug already found and fixed for Wix in an earlier round
+  (imports evaluate before the importing module's own top-level code runs,
+  so this file's own throw always won the race against `server.ts`'s
+  friendlier `console.error`-based check) — just never re-tested for
+  WooCommerce specifically with a genuinely empty `.env` after the original
+  `loadEnv.ts` fix, since that fix solved a different ordering problem (which
+  module loads `.env` first) and left this one (which module's *check* wins)
+  undiscovered. Confirmed live: before the fix, `npm start` with no `.env`
+  produced an uncaught-exception stack trace instead of the intended
+  one-line message; after, it prints the clean message and exits normally.
+  Fixed the same way as Wix: no module-level throw in the client module, a
+  lazy assertion inside the function that actually needs the value instead.
+  A reminder that "we fixed this bug for platform A" doesn't mean platform B
+  (built on the same original single-file template) got the same fix unless
+  it's explicitly re-verified live, not just assumed by analogy.
