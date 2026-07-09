@@ -13,7 +13,11 @@
  * 1. ensureSiteFromIntake: creates a new client+site with platform/feed_url/
  *    opt-out written to the right columns; defaults clientName to domain
  *    when omitted; upserts (PATCH, not a duplicate POST) on a repeat
- *    submission for the same client+root_url.
+ *    submission for the same client+root_url; NEVER writes is_test (real
+ *    intake is always a real site).
+ * 1b. ensureDevSite: sets is_test: true on a newly CREATED site (the dev
+ *     bootstrap path is never a real merchant site) but never re-sets it
+ *     when reusing an already-existing site found by domain.
  * 2. runAnalysis: returns the documented result shape (no_manifest path);
  *    returns {status:"failed", error} — never throws/exits — when a
  *    downstream call fails.
@@ -53,6 +57,7 @@ import {
   BundleNotFoundError,
 } from "./pipeline.ts";
 import type { SupabaseConfig } from "./supabaseSink.ts";
+import { ensureDevSite } from "./supabaseSink.ts";
 import { createHandler, type PipelineDeps } from "../api/analyze.ts";
 import { createHandler as createReportHandler, type ReportDeps } from "../api/report/[runId].ts";
 import { createHandler as createBundleHandler, type BundleDeps } from "../api/bundle/[runId].ts";
@@ -136,6 +141,58 @@ function has(calls: MockCall[], urlSubstr: string, method: string): boolean {
     sentBody,
   );
   check("ensureSiteFromIntake: new site defaults is_ecommerce true", sentBody?.[0]?.is_ecommerce === true, sentBody);
+  check(
+    "ensureSiteFromIntake: NEVER writes is_test — real intake is, by definition, a real site (relies on the column's own DEFAULT false)",
+    sentBody?.[0]?.is_test === undefined,
+    sentBody,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1b. ensureDevSite — the dev bootstrap path. Anything it CREATES is, by
+//     definition, not a real merchant site, so it must set is_test: true on
+//     creation — but never on a reuse of an already-existing site (which may
+//     since have become real via ensureSiteFromIntake pointing at the same
+//     domain).
+// ---------------------------------------------------------------------------
+
+{
+  const calls: MockCall[] = [];
+  const fetcher = makeMockFetch(
+    [
+      { match: (u, m) => u.includes("/rest/v1/clients") && m === "GET", respond: () => jsonResponse([]) },
+      { match: (u, m) => u.includes("/rest/v1/clients") && m === "POST", respond: () => jsonResponse([{ id: "client-dev" }]) },
+      { match: (u, m) => u.includes("/rest/v1/sites") && m === "GET", respond: () => jsonResponse([]) },
+      { match: (u, m) => u.includes("/rest/v1/sites") && m === "POST", respond: () => jsonResponse([{ id: "site-dev-new" }]) },
+    ],
+    calls,
+  );
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  const siteId = await ensureDevSite(cfg, { clientName: "Adeptra Dev", domain: "dev-store.test" });
+  check("ensureDevSite: returns the created siteId", siteId === "site-dev-new", siteId);
+
+  const sitesPost = calls.find((c) => c.url.includes("/rest/v1/sites") && c.method === "POST");
+  const sentBody = sitesPost?.body ? JSON.parse(sitesPost.body) : null;
+  check("ensureDevSite: sets is_test: true on a newly created site (the dev bootstrap path is never a real merchant site)", sentBody?.[0]?.is_test === true, sentBody);
+}
+
+{
+  // Reusing an already-existing site (found by domain) must NOT re-flag it —
+  // no POST happens at all here, so there's no body to (mis)set is_test on.
+  const calls: MockCall[] = [];
+  const fetcher = makeMockFetch(
+    [
+      { match: (u, m) => u.includes("/rest/v1/clients") && m === "GET", respond: () => jsonResponse([{ id: "client-dev" }]) },
+      { match: (u, m) => u.includes("/rest/v1/sites") && m === "GET", respond: () => jsonResponse([{ id: "site-dev-existing" }]) },
+    ],
+    calls,
+  );
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  const siteId = await ensureDevSite(cfg, { clientName: "Adeptra Dev", domain: "dev-store.test" });
+  check("ensureDevSite (repeat): reuses the existing siteId", siteId === "site-dev-existing", siteId);
+  check("ensureDevSite (repeat): does NOT create a duplicate site row (so is_test can't be re-set on reuse)", !has(calls, "/rest/v1/sites", "POST"), calls.map((c) => `${c.method} ${c.url}`));
 }
 
 {

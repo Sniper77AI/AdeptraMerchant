@@ -396,6 +396,13 @@ export async function ensureDevSite(
       domain: opts.domain,
       root_url: opts.rootUrl ?? `https://${opts.domain}`,
       is_ecommerce: true,
+      is_test: true, // this IS the dev bootstrap path — anything it creates is by
+      // definition not a real merchant site (see sites.is_test's own column
+      // comment). Only set on the create path above, never when reusing an
+      // existing site found by the domain lookup — ensureDevSite dedups by
+      // domain, and re-running it against a site that's since become real
+      // (e.g. re-pointed at by ensureSiteFromIntake) must not silently
+      // re-flag it as test data.
       ...(opts.feedUrl ? { feed_url: opts.feedUrl } : {}),
     },
   ]);
@@ -410,6 +417,10 @@ export async function ensureDevSite(
 // intake form collects. On a repeat submission for the same client+root_url,
 // PATCHes only the fields actually provided this time, rather than silently
 // ignoring an updated answer — a resubmission is a real edit, not a no-op.
+// NEVER writes sites.is_test — IntakeSiteFields has no such field, and
+// neither the create nor the PATCH path below sets one. Real intake is, by
+// definition, a real site; it relies entirely on the column's own
+// DEFAULT false, the same way every other real-merchant write path does.
 // ---------------------------------------------------------------------------
 
 export interface IntakeSiteFields {
