@@ -36,31 +36,45 @@
  * 17. Determinism + async signature; orchestrator produces all three
  *     artifact types together through the now-async runArtifacts(ctx).
  *
- * mcp_scaffold generator (artifact_type='mcp_scaffold', pure/sync, WooCommerce-
- * only, platform-GATED not platform-guessed — ctx.platform comes from the
- * onboarding-declared sites.platform column):
- * 18. Platform gate: no platform declared -> null, even with a capability gap.
- * 19. Platform gate: platform declared but not 'woocommerce' -> null.
- * 20. WooCommerce + checkout/cart/catalog already all passing -> null (nothing to add).
- * 21. WooCommerce + a genuine capability gap -> generates the full file-tree
- *     (README.md, package.json, tsconfig.json, .env.example, src/server.ts,
- *     src/woocommerce.ts) as a decodable ArtifactFileTree; resolves_signal_keys
- *     is always empty (never claimed resolved pre-deployment).
- * 22. HONESTY/BOUNDARY: woocommerce.ts (the only file that talks to the Store
- *     API) references only /wp-json/wc/store/v1 and never /wc/v3 (admin) or a
- *     checkout endpoint; begin_checkout in server.ts returns the cart + the
- *     store's own checkout URL, explicitly stating payment isn't handled here.
- * 23. No real secrets/URLs baked in: the real store domain (from ctx.rootUrl)
- *     may appear in README.md as a label, but never in .env.example/src/* —
- *     those use only the REPLACE-* placeholder and read from process.env.
- * 24. UCP wiring: the manifest artifact's endpoint placeholder and the
- *     scaffold's README both point at "your deployed URL" — the report is
- *     what tells the merchant to reconcile them.
- * 25. Determinism + purity (sync, no input mutation, identical repeated output).
+ * mcp_scaffold generator (artifact_type='mcp_scaffold', pure/sync,
+ * platform-GATED not platform-guessed — ctx.platform comes from the
+ * onboarding-declared sites.platform column). Refactored into a spine
+ * (mcpScaffoldArtifact.ts) + per-platform providers (scaffold/woocommerce.ts,
+ * scaffold/wix.ts, scaffold/shared.ts):
+ * 18. Platform gate: no platform declared -> null; unsupported platform
+ *     ('shopify'/'custom') -> null; 'woocommerce' -> Woo tree; 'wix' -> Wix
+ *     tree; either platform with checkout/cart/catalog already all passing
+ *     -> null (nothing to add).
+ * 19. REGRESSION: WooCommerce output after the refactor is IDENTICAL to a
+ *     golden fixture captured from the pre-refactor single-file generator,
+ *     for every file except two deliberate, disclosed generalizations forced
+ *     by sharing code across platforms (loadEnv.ts's comment no longer names
+ *     "woocommerce.ts"/"WOOCOMMERCE_STORE_URL" specifically; the shared
+ *     payment-boundary flagged line says "a checkout URL" instead of "your
+ *     store's normal checkout URL", since Wix's is Wix-hosted, not the
+ *     store's own page). Both are asserted explicitly, not just allowed to
+ *     silently differ.
+ * 20. WooCommerce full generation + HONESTY/BOUNDARY + no-secrets + UCP
+ *     wiring + determinism (the original, still-valid coverage).
+ * 21. Wix full generation -> the full file-tree (README.md, package.json,
+ *     tsconfig.json, .env.example, src/loadEnv.ts, src/server.ts, src/wix.ts).
+ * 22. Wix BOUNDARY: generated code never references order-creation
+ *     (/ecom/v1/orders) or any payment-submission endpoint; begin_checkout
+ *     returns a checkout_url + the explicit "payment not handled" note; the
+ *     Catalog V3 startup check (assertCatalogV3/GetCatalogVersion) is present.
+ * 23. No secrets/real values baked into Wix src/*; WIX_CLIENT_ID/WIX_SITE_URL
+ *     appear only as REPLACE-* placeholders in .env.example.
+ * 24. loadEnv is imported before any module that reads env, for Wix too (the
+ *     WooCommerce import-order bug, asserted structurally per-platform).
+ * 25. Wix README: the not-Wix warning, the numbered OAuth walkthrough, the
+ *     minimum-scopes disclosure table (prominent, not buried), the Developer-
+ *     Preview note, the pre-headless-data gotcha, and the Catalog V1/V3 gotcha.
+ * 26. Wix determinism/purity.
  *
  * Run: node --experimental-strip-types test_artifacts.ts
  */
 
+import { readFileSync } from "node:fs";
 import {
   sig_manifest_present,
   sig_version_declared,
@@ -86,6 +100,12 @@ import { generateFeedArtifact } from "./artifacts/feedArtifact.ts";
 import { generateContentRewriteArtifact } from "./artifacts/contentRewriteArtifact.ts";
 import { generateMcpScaffoldArtifact } from "./artifacts/mcpScaffoldArtifact.ts";
 import { runArtifacts, decodeFileTree, type ArtifactContext } from "./artifacts/index.ts";
+
+// Captured from the pre-refactor single-file mcpScaffoldArtifact.ts's actual
+// WooCommerce output (not hand-written) — see test 19 below.
+const GOLDEN_WOOCOMMERCE: Record<string, string> = JSON.parse(
+  readFileSync(`${(import.meta as any).dirname}/test_fixtures/mcp_scaffold_woocommerce_golden.json`, "utf8"),
+);
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown) {
@@ -799,25 +819,76 @@ function capsSignals(checkout: SignalRow["status"], cart: SignalRow["status"], c
   ];
 }
 
-// 18. Platform gate: no platform declared -> null, even with a capability gap.
+// 18. Platform gating: undeclared/unsupported -> null; woocommerce/wix -> a
+//     tree; either platform already-fully-passing -> null.
 {
   const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail") });
   check("mcp_scaffold: platform undeclared -> returns null (never guesses platform)", draft === null, draft);
 }
-
-// 19. Platform gate: a non-WooCommerce platform -> null.
 {
   const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "shopify" });
   check("mcp_scaffold: platform='shopify' -> returns null", draft === null, draft);
 }
-
-// 20. WooCommerce + everything already passing -> null (nothing to add).
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "custom" });
+  check("mcp_scaffold: platform='custom' -> returns null", draft === null, draft);
+}
 {
   const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("pass", "pass", "pass"), platform: "woocommerce" });
   check("mcp_scaffold: WooCommerce but checkout/cart/catalog already all passing -> null", draft === null, draft);
 }
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("pass", "pass", "pass"), platform: "wix" });
+  check("mcp_scaffold: Wix but checkout/cart/catalog already all passing -> null", draft === null, draft);
+}
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "wix", rootUrl: "https://mystore.example.com" });
+  check("mcp_scaffold: Wix + capability gap -> draft produced (Wix tree, not Woo)", draft !== null, draft);
+  const tree = draft ? decodeFileTree(draft.content) : null;
+  const paths = tree?.files.map((f) => f.path) ?? [];
+  check("mcp_scaffold: Wix draft contains src/wix.ts, not src/woocommerce.ts", paths.includes("src/wix.ts") && !paths.includes("src/woocommerce.ts"), paths);
+}
 
-// 21. WooCommerce + a genuine capability gap -> generates the full file-tree.
+// 19. REGRESSION: WooCommerce output after the refactor, compared file-by-
+//     file against a golden fixture captured from the pre-refactor single-
+//     file generator. Every file must be byte-identical EXCEPT the two
+//     disclosed generalizations documented above — those are asserted
+//     explicitly, not just allowed to silently differ.
+{
+  const draft = generateMcpScaffoldArtifact({
+    manifest: NO_MANIFEST,
+    feed: null,
+    signals: capsSignals("fail", "fail", "fail"),
+    platform: "woocommerce",
+    rootUrl: "https://mystore.example.com",
+  });
+  const tree = decodeFileTree(draft!.content)!;
+  const fileByPath = new Map(tree.files.map((f) => [f.path, f.contents]));
+
+  // Byte-identical files (unaffected by the shared-across-platforms refactor).
+  // GOLDEN_WOOCOMMERCE (test_fixtures/mcp_scaffold_woocommerce_golden.json)
+  // was captured from the pre-refactor single-file generator's ACTUAL output
+  // (not hand-written) — the exact four files this refactor left untouched.
+  check("mcp_scaffold REGRESSION: README.md byte-identical to pre-refactor", fileByPath.get("README.md") === GOLDEN_WOOCOMMERCE["README.md"], "mismatch");
+  check("mcp_scaffold REGRESSION: package.json byte-identical to pre-refactor", fileByPath.get("package.json") === GOLDEN_WOOCOMMERCE["package.json"], "mismatch");
+  check("mcp_scaffold REGRESSION: server.ts byte-identical to pre-refactor", fileByPath.get("src/server.ts") === GOLDEN_WOOCOMMERCE["src/server.ts"], "mismatch");
+  check("mcp_scaffold REGRESSION: woocommerce.ts byte-identical to pre-refactor", fileByPath.get("src/woocommerce.ts") === GOLDEN_WOOCOMMERCE["src/woocommerce.ts"], "mismatch");
+
+  // Deliberately-changed pieces: same MEANING, disclosed different wording —
+  // asserted precisely so a future accidental change is still caught.
+  const loadEnv = fileByPath.get("src/loadEnv.ts")!;
+  check("mcp_scaffold REGRESSION: loadEnv.ts no longer names woocommerce.ts specifically (now shared)", !loadEnv.includes("woocommerce.ts"), loadEnv);
+  check("mcp_scaffold REGRESSION: loadEnv.ts still documents the same import-order requirement", loadEnv.includes("MUST be the FIRST import"), loadEnv);
+  const flaggedLine = draft!.changelog.flagged[0];
+  check(
+    "mcp_scaffold REGRESSION: shared flagged line generalized ('a checkout URL', not WooCommerce-specific wording)",
+    flaggedLine.includes("a checkout URL") && !flaggedLine.includes("your store's normal checkout URL"),
+    flaggedLine,
+  );
+  check("mcp_scaffold REGRESSION: shared flagged line still conveys the same boundary", flaggedLine.includes("Payment is intentionally NOT handled"), flaggedLine);
+}
+
+// 20. WooCommerce + a genuine capability gap -> generates the full file-tree.
 let scaffoldDraft: ReturnType<typeof generateMcpScaffoldArtifact>;
 {
   scaffoldDraft = generateMcpScaffoldArtifact({
@@ -848,7 +919,11 @@ let scaffoldDraft: ReturnType<typeof generateMcpScaffoldArtifact>;
 //     files' own header comments legitimately mention "checkout"/"/wc/v3" to
 //     document what they deliberately don't do.
 function stripComments(code: string): string {
-  return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  // The negative lookbehind (?<!:) prevents matching the "//" inside a
+  // "https://" (or similar protocol) string literal as a line-comment start
+  // — found live when the Wix client's hardcoded API_BASE URL got truncated
+  // mid-string by this helper.
+  return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/.*$/gm, "");
 }
 {
   const tree = decodeFileTree(scaffoldDraft!.content)!;
@@ -947,6 +1022,184 @@ function stripComments(code: string): string {
 
   const again = generateMcpScaffoldArtifact(ctx);
   check("mcp_scaffold purity: identical output across repeated calls", JSON.stringify(result) === JSON.stringify(again));
+}
+
+// ---------------------------------------------------------------------------
+// mcp_scaffold generator — Wix provider
+// ---------------------------------------------------------------------------
+
+// 21. Wix + a genuine capability gap -> generates the full file-tree.
+let wixScaffoldDraft: ReturnType<typeof generateMcpScaffoldArtifact>;
+{
+  wixScaffoldDraft = generateMcpScaffoldArtifact({
+    manifest: NO_MANIFEST,
+    feed: null,
+    signals: capsSignals("fail", "fail", "fail"),
+    platform: "wix",
+    rootUrl: "https://mystore.example.com",
+  });
+  check("mcp_scaffold (Wix): draft produced", wixScaffoldDraft !== null, wixScaffoldDraft);
+  check("mcp_scaffold (Wix): artifact_type is mcp_scaffold", wixScaffoldDraft?.artifact_type === "mcp_scaffold");
+  check("mcp_scaffold (Wix): target_url is the mcp-server folder", wixScaffoldDraft?.target_url === "mcp-server", wixScaffoldDraft?.target_url);
+  check("mcp_scaffold (Wix): resolves_signal_keys is always empty (never claimed resolved pre-deployment)", wixScaffoldDraft?.resolves_signal_keys.length === 0, wixScaffoldDraft?.resolves_signal_keys);
+
+  const tree = wixScaffoldDraft ? decodeFileTree(wixScaffoldDraft.content) : null;
+  check("mcp_scaffold (Wix): content decodes as a valid file tree", tree !== null, wixScaffoldDraft?.content);
+  const paths = tree?.files.map((f) => f.path) ?? [];
+  check(
+    "mcp_scaffold (Wix): generates the full expected file-tree",
+    ["README.md", "package.json", "tsconfig.json", ".env.example", "src/loadEnv.ts", "src/server.ts", "src/wix.ts"].every((p) => paths.includes(p)),
+    paths,
+  );
+}
+
+// 22. Wix BOUNDARY: never references order-creation or payment-completion
+//     endpoints; begin_checkout returns checkout_url + the explicit "not
+//     handled" note; the Catalog V3 startup check is present.
+{
+  const tree = decodeFileTree(wixScaffoldDraft!.content)!;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+  const wixSrc = tree.files.find((f) => f.path === "src/wix.ts")!.contents;
+  const serverCode = stripComments(serverSrc);
+  const wixCode = stripComments(wixSrc);
+  const allCode = serverCode + wixCode;
+
+  check("mcp_scaffold (Wix): talks to the Wix eCommerce API base", wixCode.includes("wixapis.com"), null);
+  check("mcp_scaffold (Wix): code never references order creation (/ecom/v1/orders)", !allCode.includes("/ecom/v1/orders"), allCode);
+  check(
+    // wix.ts is the ONLY file that calls the Wix API — the real boundary.
+    // server.ts legitimately mentions "payment" in its honest disclosure
+    // string ("Payment is not handled by this server...") so checking it
+    // for the bare word would false-positive on the honesty itself.
+    "mcp_scaffold (Wix): wix.ts (the only file that calls the Wix API) never references payment submission",
+    !wixCode.toLowerCase().includes("payment") && !wixCode.includes("/pay"),
+    wixCode,
+  );
+  check(
+    "mcp_scaffold (Wix): begin_checkout returns checkout_url from the redirect-session flow, not a raw payment call",
+    serverCode.includes("checkout_url") && serverCode.includes("createCheckoutUrl"),
+    serverCode,
+  );
+  check(
+    "mcp_scaffold (Wix): begin_checkout explicitly states payment is not handled here",
+    serverSrc.toLowerCase().includes("not handled by this server") || serverSrc.toLowerCase().includes("does not process payment"),
+    serverSrc,
+  );
+  check(
+    "mcp_scaffold (Wix): checkout flow uses create-checkout + redirect-session (two calls), never completes payment itself",
+    wixCode.includes("create-checkout") && wixCode.includes("redirect-session"),
+    wixCode,
+  );
+  check(
+    "mcp_scaffold (Wix): startup calls the Catalog V3 check before registering tools",
+    serverCode.includes("assertCatalogV3") && wixCode.includes("provision/version"),
+    { serverCode, wixCode },
+  );
+  check(
+    "mcp_scaffold (Wix): exits with a clear message when the site isn't on Catalog V3",
+    wixCode.includes("requires Wix Catalog V3"),
+    wixCode,
+  );
+  check(
+    "mcp_scaffold (Wix): wix.ts documents the endpoints it deliberately never calls",
+    wixSrc.toLowerCase().includes("deliberately never call"),
+    wixSrc,
+  );
+}
+
+// 23. No secrets/real values baked into Wix src/*; placeholders in .env.example.
+{
+  const tree = decodeFileTree(wixScaffoldDraft!.content)!;
+  const readme = tree.files.find((f) => f.path === "README.md")!.contents;
+  const envExample = tree.files.find((f) => f.path === ".env.example")!.contents;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+  const wixSrc = tree.files.find((f) => f.path === "src/wix.ts")!.contents;
+
+  check("mcp_scaffold (Wix): README.md personalizes with the real store domain (a label, not a secret)", readme.includes("mystore.example.com"), readme);
+  check("mcp_scaffold (Wix): .env.example contains obvious REPLACE placeholders for client id + site url", envExample.includes("REPLACE-WITH-YOUR-WIX-OAUTH-CLIENT-ID") && envExample.includes("REPLACE-WITH-YOUR-STORE-URL"), envExample);
+  check("mcp_scaffold (Wix): no real store domain baked into .env.example", !envExample.includes("mystore.example.com"), envExample);
+  check("mcp_scaffold (Wix): no real store domain baked into src/server.ts", !serverSrc.includes("mystore.example.com"), serverSrc);
+  check("mcp_scaffold (Wix): no real store domain baked into src/wix.ts", !wixSrc.includes("mystore.example.com"), wixSrc);
+  check(
+    "mcp_scaffold (Wix): src files read WIX_CLIENT_ID/WIX_SITE_URL from env, not literals",
+    serverSrc.includes("process.env.WIX_CLIENT_ID") || wixSrc.includes("process.env.WIX_CLIENT_ID"),
+    { serverSrc, wixSrc },
+  );
+  check("mcp_scaffold (Wix): no client secret field anywhere (public-client flow only)", !wixSrc.toLowerCase().includes("client_secret") && !wixSrc.toLowerCase().includes("clientsecret"), wixSrc);
+}
+
+// 24. loadEnv imported before any module that reads env (the WooCommerce
+//     import-order bug, asserted structurally for Wix too).
+{
+  const tree = decodeFileTree(wixScaffoldDraft!.content)!;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+  const loadEnvSrc = tree.files.find((f) => f.path === "src/loadEnv.ts")!.contents;
+  const serverCode = stripComments(serverSrc);
+
+  const firstImportLine = serverCode
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("import "));
+  check("mcp_scaffold (Wix): loadEnv.js is server.ts's FIRST import (ESM import-order fix)", firstImportLine?.includes("./loadEnv.js") ?? false, firstImportLine);
+  check("mcp_scaffold (Wix): loadEnv.ts has no imports of its own", !stripComments(loadEnvSrc).includes("import "), loadEnvSrc);
+  check("mcp_scaffold (Wix): loadEnv.ts is IDENTICAL to the WooCommerce one (truly shared, not duplicated)", loadEnvSrc === decodeFileTree(scaffoldDraft!.content)!.files.find((f) => f.path === "src/loadEnv.ts")!.contents, null);
+}
+
+// 25. Wix README: the not-Wix warning, the numbered OAuth walkthrough, the
+//     minimum-scopes disclosure table (prominent, not buried), the Developer-
+//     Preview note, the pre-headless-data gotcha, and the Catalog V1/V3 gotcha.
+{
+  const tree = decodeFileTree(wixScaffoldDraft!.content)!;
+  const readme = tree.files.find((f) => f.path === "README.md")!.contents;
+  const readmeLower = readme.toLowerCase();
+
+  check(
+    "mcp_scaffold (Wix) README: opens with a not-Wix warning near the top",
+    readmeLower.indexOf("if your store is not on wix, do not deploy this") > -1 && readmeLower.indexOf("if your store is not on wix, do not deploy this") < 300,
+    readme.slice(0, 300),
+  );
+  check("mcp_scaffold (Wix) README: numbered OAuth setup walkthrough present", /##\s*wix setup, step by step/i.test(readme) && readme.includes("1.") && readme.includes("6."), readme);
+  check("mcp_scaffold (Wix) README: mentions creating a Headless project and an OAuth app", readmeLower.includes("headless project") && readmeLower.includes("oauth app"), readme);
+
+  // Scope disclosure: prominent (appears before the step-by-step setup
+  // section, not buried after it) and lists all four verified scopes.
+  const scopeSectionIdx = readme.indexOf("About the permissions you're granting");
+  const setupSectionIdx = readme.indexOf("Wix setup, step by step");
+  check("mcp_scaffold (Wix) README: scope disclosure section exists", scopeSectionIdx > -1, readme);
+  check("mcp_scaffold (Wix) README: scope disclosure appears BEFORE the setup walkthrough (prominent, not a footnote)", scopeSectionIdx > -1 && setupSectionIdx > -1 && scopeSectionIdx < setupSectionIdx, {
+    scopeSectionIdx,
+    setupSectionIdx,
+  });
+  check(
+    "mcp_scaffold (Wix) README: scope table lists all four verified scopes",
+    ["SCOPE.STORES.PRODUCT_READ", "SCOPE.STORES.CATALOG_READ_LIMITED", "SCOPE.DC-ECOM-MEGA.MANAGE-ECOM", "SCOPE.DC-STORES.MANAGE-ORDERS"].every((s) => readme.includes(s)),
+    readme,
+  );
+  const readmeNormalized = readmeLower.replace(/\s+/g, " "); // collapse markdown line-wrapping before substring checks
+  check(
+    "mcp_scaffold (Wix) README: states plainly that Wix offers no narrower scope",
+    readmeNormalized.includes("does not currently offer a narrower permission scope"),
+    readme,
+  );
+  check("mcp_scaffold (Wix) README: tells the merchant to treat the deployed server/credentials as sensitive", readmeLower.includes("sensitive"), readme);
+
+  check("mcp_scaffold (Wix) README: discloses the OAuth token endpoint is Developer Preview", readmeLower.includes("developer preview"), readme);
+  check("mcp_scaffold (Wix) README: pre-headless product-field gotcha documented", readmeLower.includes("pre-headless") && readmeLower.includes("product field"), readme);
+  check("mcp_scaffold (Wix) README: Catalog V1 vs V3 gotcha documented, with how to tell", readmeLower.includes("catalog v1") && readmeLower.includes("catalog v3"), readme);
+}
+
+// 26. Wix determinism + purity.
+{
+  const ctx: ArtifactContext = { manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "wix" };
+  const result = generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold (Wix) purity: synchronous, not a Promise", !(result instanceof Promise));
+
+  const beforeSignals = JSON.stringify(ctx.signals);
+  generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold (Wix) purity: does not mutate ctx.signals", JSON.stringify(ctx.signals) === beforeSignals);
+
+  const again = generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold (Wix) purity: identical output across repeated calls", JSON.stringify(result) === JSON.stringify(again));
 }
 
 // ---------------------------------------------------------------------------

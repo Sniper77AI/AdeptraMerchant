@@ -100,19 +100,49 @@ merchant/
                            # in the output isn't traceable to the source page text.
                            # @context/@type are injected deterministically after parsing (never
                            # trusted to the model) so the output is always valid standalone JSON-LD
-      mcpScaffoldArtifact.ts # Artifact #4 — pure generator for artifact_type='mcp_scaffold'. Emits a
-                           # deployable WooCommerce MCP shopping-server (catalog search + cart
-                           # building via WooCommerce's public Store API — /wp-json/wc/store/v1/*
-                           # only; never the admin /wc/v3/ API, never the Store API's own /checkout
-                           # endpoint). PLATFORM-GATED, not platform-guessed: only runs when
-                           # ctx.platform === "woocommerce" (an onboarding-declared fact, sites.platform),
-                           # and only when checkout/cart/catalog capability signals aren't already
-                           # all passing. Multi-file output via the tagged ArtifactFileTree in
-                           # content (README.md deploy guide, package.json, tsconfig.json,
-                           # .env.example, src/loadEnv.ts, src/server.ts, src/woocommerce.ts).
-                           # Adeptra generates and configures; the merchant deploys — Adeptra never
-                           # hosts this. resolves_signal_keys is always empty (never claimed
-                           # resolved pre-deployment, same principle as feedArtifact.ts)
+      mcpScaffoldArtifact.ts # Artifact #4 — pure generator for artifact_type='mcp_scaffold'. SPINE:
+                           # owns platform dispatch (PLATFORM_PROVIDERS keyed by ctx.platform — an
+                           # onboarding-declared fact, sites.platform, never guessed), the
+                           # capability-signal gate (nothing to add once checkout/cart/catalog are
+                           # all already passing), ArtifactDraft/file-tree assembly, and the
+                           # changelog lines genuinely identical across every platform ("Deploy
+                           # mcp-server/...", "...point your UCP manifest...", the payment-boundary
+                           # flag). Each platform's actual files (API client, README, env vars, deps)
+                           # live in a sibling scaffold/<platform>.ts provider — adding a third
+                           # platform is one more provider module + one more PLATFORM_PROVIDERS line,
+                           # this file's assembly logic doesn't change. resolves_signal_keys is
+                           # always empty for every platform (never claimed resolved
+                           # pre-deployment, same principle as feedArtifact.ts)
+      scaffold/
+        shared.ts           # Genuinely platform-agnostic pieces both providers use: TARGET_FOLDER,
+                           # MCP SDK/zod version constants, tsconfigJson(), and loadEnvTs() — the
+                           # side-effect-only .env-loading module both platforms' server.ts imports
+                           # FIRST (see Open items below for the import-order bug this fixed originally,
+                           # now fixed once here for every platform instead of per-platform). Also the
+                           # ScaffoldProvider interface every provider module implements: { files,
+                           # addedLines, setupMustComplete, extraFlagged }
+        woocommerce.ts       # Provider — extracted unchanged from the original single-file generator.
+                           # Catalog search + cart building via WooCommerce's public Store API only
+                           # (/wp-json/wc/store/v1/* — never the admin /wc/v3/ API, never the Store
+                           # API's own /checkout endpoint; begin_checkout returns the cart + the
+                           # store's normal checkout URL for handoff). Byte-identical output to the
+                           # pre-refactor generator, proven by a golden-fixture regression test
+        wix.ts                # Provider #2 — a deployable Wix MCP shopping-server (raw REST against
+                           # Wix's eCommerce API, no Wix SDK dependency). Structurally different
+                           # boundary problem than WooCommerce: Wix's API CAN create checkouts/orders,
+                           # so the payment/order boundary is enforced by this file's own discipline
+                           # (an explicit "endpoints we deliberately never call" header comment + a
+                           # boundary regression test), not by the platform. Scope reality documented
+                           # up front in the generated README (before the setup walkthrough, not
+                           # buried): Wix offers no narrower grantable OAuth scope than this server's 4
+                           # actual scopes, so the deploy guide tells the merchant to treat the
+                           # deployed server + WIX_CLIENT_ID as sensitive. Hard-fails at startup
+                           # (assertCatalogV3, calling the confirmed-cheap GetCatalogVersion endpoint)
+                           # with a plain-English message if the site is on Catalog V1 — Wix's
+                           # V1/V3 catalog split is not backward-compatible and this scaffold only
+                           # supports V3. Also discloses that Wix's OAuth token endpoint is currently
+                           # Developer Preview and may change. See Open items below for two real
+                           # startup-exit bugs a live npm start caught and fixed.
       index.ts             # runArtifacts(ctx) orchestrator — async (awaits each generator so the
                            # sync manifest/feed/mcp_scaffold generators and the async content_rewrite
                            # generator share one call site); sibling modules (jsonld, llms_txt,
@@ -173,14 +203,25 @@ merchant/
                            # hallucinated value, ctx.llm null degrading gracefully, deterministic
                            # @context/@type injection even when the model omits it, determinism +
                            # async signature. mcp_scaffold generator: platform-gate (undeclared/
-                           # non-woocommerce → null; woocommerce + all capabilities already passing →
-                           # null), full file-tree generation, the honesty/boundary check (Store API
-                           # only, no admin API, no checkout call — asserted against comment-stripped
-                           # code so the files' own explanatory comments about what they DON'T do
-                           # can't false-positive the check), no real secrets/URLs baked into
-                           # src/*, the ESM import-order regression test for loadEnv.ts, purity.
-                           # Plus an orchestrator integration check that all four generators wire
-                           # into the now-async runArtifacts(ctx) together
+                           # unsupported → null; woocommerce/wix + all capabilities already passing →
+                           # null; unrecognized platform never falls through to a guess), full
+                           # file-tree generation for both providers, the honesty/boundary check per
+                           # platform (Store API only for WooCommerce, no order/payment endpoints for
+                           # Wix — asserted against comment-stripped code so the files' own
+                           # explanatory comments about what they DON'T do can't false-positive the
+                           # check), no real secrets/URLs baked into src/*, the ESM import-order
+                           # regression test for loadEnv.ts (now shared — a byte-identical-across-
+                           # platforms check proves it's genuinely shared, not duplicated), Wix's
+                           # README content checks (scope disclosure appears BEFORE the setup
+                           # walkthrough, Catalog V1/V3 and pre-headless gotchas documented, Developer
+                           # Preview disclosed), Wix's Catalog V3 startup-check assertion, purity for
+                           # both providers, and a REGRESSION test comparing the refactored
+                           # WooCommerce output against test_fixtures/mcp_scaffold_woocommerce_golden.json
+                           # (captured from the pre-refactor single-file generator) — byte-identical
+                           # except two disclosed, necessary generalizations from sharing loadEnv.ts
+                           # and one changelog line across platforms. Plus an orchestrator integration
+                           # check that all four generators wire into the now-async runArtifacts(ctx)
+                           # together
     export/
       reportBuilder.ts     # PURE: turns one run's fetched data into a BundlePlan — a markdown
                            # report, a standalone self-contained report.html (inline CSS, no
@@ -519,6 +560,32 @@ live-verified against two real stores (skims.com, gymshark.com).**
       genuine no-manifest case) with `platform` set manually for the test. The exported zip's
       `mcp-server/` folder was downloaded, `npm install`'d, built with `tsc` (zero errors), and
       started for real — confirming the generated code isn't just plausible-looking text.
+- [x] Artifact generation, artifact #4 continued — second platform (`sites.platform === 'wix'`): a
+      deployable Wix MCP shopping-server scaffold, raw REST against Wix's eCommerce API (no Wix SDK
+      dependency). Required generalizing `mcpScaffoldArtifact.ts` from a single WooCommerce-only file
+      into a spine (platform dispatch, capability-signal gate, file-tree/changelog assembly) +
+      per-platform provider modules under `artifacts/scaffold/` — proven non-regressive with a
+      golden-fixture test capturing the pre-refactor WooCommerce output and diffing it against the
+      refactored output byte-for-byte (two disclosed, necessary generalizations from genuinely
+      sharing `loadEnv.ts` and one changelog line across platforms; every other file identical).
+      Structurally different boundary problem than WooCommerce: WooCommerce's Store API cannot
+      authorize payment, so the platform itself enforces the boundary; Wix's eCommerce API CAN create
+      checkouts and orders, so the boundary here is enforced by the generated code's own discipline —
+      an explicit "endpoints this file deliberately never calls" header comment in `wix.ts` plus a
+      boundary regression test asserting no order-creation/payment-submission endpoint is ever
+      referenced. Scope reality is disclosed prominently (a dedicated README section placed BEFORE
+      the setup walkthrough, verified by a test asserting the ordering): Wix has no narrower
+      grantable OAuth scope than the 4 scopes this server actually needs, so the deploy guide tells
+      the merchant to treat the deployed server and its `WIX_CLIENT_ID` as sensitive. Wix's Catalog
+      V1/V3 split (not backward-compatible; existing sites may be on either) is handled with a hard
+      startup check — `assertCatalogV3()` calls the confirmed-cheap `GetCatalogVersion` endpoint and
+      fails with a plain-English message ("this server requires Wix Catalog V3...") rather than
+      letting a V1 site hit confusing runtime errors later; this scaffold is V3-only by design, not
+      dual-version. Also discloses that the Wix OAuth token endpoint it depends on is currently marked
+      Developer Preview by Wix and may change. Live-build-verified the same way as WooCommerce
+      (`npm install && npm run build && npm start`) — this run caught two real bugs the mock-driven
+      tests couldn't (see Open items below), both fixed and re-verified with the same live cycle
+      before shipping.
 - [ ] Remaining artifact types: `jsonld`, `llms_txt`, `robots_patch`
       (structured as sibling modules under `artifacts/`, not yet built)
 - [ ] Edge-served agent-readable layer
@@ -692,3 +759,39 @@ live-verified against two real stores (skims.com, gymshark.com).**
   Added a regression test asserting `loadEnv.js` is `server.ts`'s first
   import and that `loadEnv.ts` has no imports of its own. Re-verified with
   the same real install/build/start cycle: the server now starts cleanly.
+
+- **Found and fixed during live testing (2026-07-07):** a real
+  `npm start` of the exported Wix `mcp-server/` scaffold, with a fake OAuth
+  client ID (so the startup catalog check would hit a real Wix error
+  response instead of hanging), printed the correct clean error message —
+  then crashed with a native `Assertion failed:
+  !(handle->flags & UV_HANDLE_CLOSING)` from libuv. Cause: `process.exit()`
+  called immediately inside `main().catch(...)`, right after an `await`ed
+  `fetch()` had just settled — a known Node/undici/Windows interaction where
+  a hard exit can race an in-flight handle teardown. Fixed by changing every
+  exit call downstream of an `await`ed network call (Wix's
+  `assertCatalogV3()`, and `server.ts`'s `main().catch()`) to throw a regular
+  `Error`/set `process.exitCode` instead of calling `process.exit()` directly,
+  letting the event loop drain naturally. `assertCatalogV3()` now throws
+  rather than exiting itself, so it composes correctly with `main()`'s single
+  catch handler. The synchronous, pre-fetch env-var check in `server.ts`
+  (which never races anything) was left as a direct `process.exit(1)`.
+  Re-verified live: both the "catalog check fails" and "missing env vars"
+  failure paths now print one clean line and exit with no native crash.
+
+- **Found and fixed during live testing (2026-07-07):** the same live run
+  surfaced a second bug in the "missing env vars" path specifically: with no
+  `.env` present at all, the server printed an ugly uncaught-exception stack
+  trace instead of `server.ts`'s intended clean one-line message. Cause:
+  `wix.ts` had its own redundant module-level `throw` checking
+  `WIX_CLIENT_ID`/`WIX_SITE_URL`, and ES modules evaluate all of a file's
+  static imports before that file's own top-level code runs — so `wix.ts`'s
+  import-time throw always fired before `server.ts`'s own guard ever got a
+  chance to run, the same class of import-order bug as the `loadEnv.ts` one
+  above, just with a redundant check instead of a missing one. Fixed by
+  removing the module-level throw and moving the check into `getAccessToken()`
+  (the first function that actually needs the values) as defense-in-depth for
+  anyone importing `wix.ts` directly, while `server.ts`'s synchronous
+  top-level check remains the one that actually fires for the real server.
+  Re-verified live: starting with no `.env` at all now prints exactly the
+  intended one-line message, no stack trace.
