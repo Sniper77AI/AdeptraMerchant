@@ -65,6 +65,77 @@ export function tsconfigJson(): string {
   );
 }
 
+/**
+ * Comment block every provider's server.ts inserts once, right before its
+ * tool registrations, explaining what the readOnlyHint/destructiveHint/
+ * idempotentHint/openWorldHint annotations below do and don't mean. Quotes
+ * the MCP SDK's own ToolAnnotations doc comment verbatim (src/types.ts,
+ * @modelcontextprotocol/sdk) so nobody mistakes these for a security
+ * boundary — they're a machine-readable statement of the boundary this
+ * server's own code already enforces, not a replacement for it.
+ */
+export const TOOL_ANNOTATIONS_NOTE = `// Tool annotations (readOnlyHint/destructiveHint/idempotentHint/openWorldHint)
+// below are HINTS, not a security boundary. Per the MCP SDK's own doc
+// comment on ToolAnnotations: "all properties in ToolAnnotations are
+// **hints**. They are not guaranteed to provide a faithful description of
+// tool behavior (including descriptive properties like \`title\`). Clients
+// should never make tool use decisions based on ToolAnnotations received
+// from untrusted servers." They supplement this server's own code
+// discipline (the payment boundary described above) — they never replace it.`;
+
+/**
+ * Shared UCP-protocol-conformance disclosure, verbatim across every
+ * provider's README. Replaces an earlier, overstated line ("Its tools
+ * follow the same catalog/cart vocabulary your UCP manifest declares") that
+ * read as an interop claim without being one: this server's tool names and
+ * cart/checkout model do NOT literally match UCP's own MCP transport
+ * binding (docs/specification/{cart,catalog,checkout}-mcp.md in
+ * Universal-Commerce-Protocol/ucp, verified directly, not guessed).
+ *
+ * Three concrete, disclosed divergences, plus what IS actually true (this
+ * server genuinely satisfies Adeptra's own capability-declaration and
+ * endpoint-reachability checks once deployed — verified against
+ * capabilityChecks.ts: those checks read manifest JSON + probe HTTP
+ * reachability, they don't require literal UCP MCP-transport conformance).
+ */
+export function ucpConformanceDisclosure(): string {
+  return `## About UCP protocol conformance — what this server is, and isn't
+
+This server's tools are inspired by UCP's shopping vocabulary, but this is a
+**simplified, incremental-cart MCP server for direct MCP clients — not a
+literal implementation of UCP's \`dev.ucp.shopping\` MCP transport binding.**
+Three concrete divergences, disclosed here rather than left to discover the
+hard way:
+
+1. **Different tool names and a different cart model.** UCP's MCP binding
+   defines canonical tools (\`search_catalog\`, \`create_cart\`/\`get_cart\`/
+   \`update_cart\`/\`cancel_cart\`, \`create_checkout\`/.../\`complete_checkout\`)
+   built around session-based, replace-style state — \`create_cart\` returns a
+   cart id, and every later call submits the FULL desired cart state under
+   that id, wrapped in a required \`meta.ucp-agent\` envelope. This server uses
+   simpler, incremental tools instead (\`add_to_cart\`, \`update_cart_item\`,
+   \`remove_cart_item\`, one implicit cart) — easier for a direct MCP client to
+   drive, but not UCP's literal vocabulary or session model.
+2. **Transport.** UCP's MCP binding requires HTTP transport with streaming
+   (and recommends request signing on checkout completion). This server uses
+   stdio — the standard "one local process per agent session" MCP deployment
+   model, not a hosted HTTP service.
+3. **No payment-carrying checkout-completion tool.** UCP's \`complete_checkout\`
+   tool is defined to accept payment credentials and place the order. This
+   server intentionally never implements anything like it — \`begin_checkout\`
+   returns a checkout URL and stops there, on purpose, as this document's
+   hard-boundary section above describes.
+
+**What IS true:** deploying this server and pointing your UCP manifest's
+\`dev.ucp.shopping\` endpoint at it genuinely satisfies Adeptra's own
+capability-declaration and endpoint-reachability checks for checkout/cart/
+catalog — those checks read your manifest's JSON and confirm the endpoint
+responds; they don't require literal UCP MCP-transport conformance. A
+strictly UCP-protocol-conformant agent, though, would need more than this
+server provides today.
+`;
+}
+
 export function loadEnvTs(): string {
   return `/**
  * Loads .env into process.env, if present, before anything else runs.

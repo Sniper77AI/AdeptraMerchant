@@ -40,20 +40,23 @@
  * platform-GATED not platform-guessed — ctx.platform comes from the
  * onboarding-declared sites.platform column). Refactored into a spine
  * (mcpScaffoldArtifact.ts) + per-platform providers (scaffold/woocommerce.ts,
- * scaffold/wix.ts, scaffold/shared.ts):
+ * scaffold/wix.ts, scaffold/custom.ts, scaffold/shared.ts):
  * 18. Platform gate: no platform declared -> null; unsupported platform
- *     ('shopify'/'custom') -> null; 'woocommerce' -> Woo tree; 'wix' -> Wix
- *     tree; either platform with checkout/cart/catalog already all passing
- *     -> null (nothing to add).
- * 19. REGRESSION: WooCommerce output after the refactor is IDENTICAL to a
- *     golden fixture captured from the pre-refactor single-file generator,
- *     for every file except two deliberate, disclosed generalizations forced
- *     by sharing code across platforms (loadEnv.ts's comment no longer names
- *     "woocommerce.ts"/"WOOCOMMERCE_STORE_URL" specifically; the shared
- *     payment-boundary flagged line says "a checkout URL" instead of "your
- *     store's normal checkout URL", since Wix's is Wix-hosted, not the
- *     store's own page). Both are asserted explicitly, not just allowed to
- *     silently differ.
+ *     ('shopify') -> null; 'woocommerce'/'wix'/'custom' -> their own tree;
+ *     any of the three with checkout/cart/catalog already all passing ->
+ *     null (nothing to add).
+ * 19. REGRESSION: WooCommerce output after the A1 (tool annotations) + A2
+ *     (UCP-conformance disclosure) changes, compared against a golden
+ *     fixture captured beforehand. package.json/tsconfig.json/.env.example/
+ *     src/loadEnv.ts/src/woocommerce.ts are BYTE-IDENTICAL — untouched by
+ *     this round. src/server.ts differs ONLY by the added `annotations: {...}`
+ *     fields (+ the explanatory comment) — proven by stripping them back out
+ *     and comparing to golden. README.md differs ONLY in the disclosed way
+ *     (the old "follows the same vocabulary" line replaced by the UCP-
+ *     conformance disclosure section) — proven by comparing the untouched
+ *     "## Prerequisites"-onward suffix byte-for-byte, plus the explicit
+ *     before/after check on the vocabulary line itself.
+ * 19b. Same REGRESSION treatment for Wix, against its own golden fixture.
  * 20. WooCommerce full generation + HONESTY/BOUNDARY + no-secrets + UCP
  *     wiring + determinism (the original, still-valid coverage).
  * 21. Wix full generation -> the full file-tree (README.md, package.json,
@@ -70,6 +73,24 @@
  *     minimum-scopes disclosure table (prominent, not buried), the Developer-
  *     Preview note, the pre-headless-data gotcha, and the Catalog V1/V3 gotcha.
  * 26. Wix determinism/purity.
+ * 27. Tool annotations: readOnlyHint/destructiveHint/idempotentHint/
+ *     openWorldHint present and correct on every tool, in all three
+ *     providers, plus the SDK-caveat comment quoted verbatim (annotations
+ *     are hints, not a security boundary).
+ * 28. Custom provider full generation -> the reference-implementation file
+ *     tree (README.md, package.json, tsconfig.json, .env.example,
+ *     src/loadEnv.ts, src/types.ts, src/store.ts, src/server.ts).
+ * 29. Custom BOUNDARY-BY-CONTRACT: StoreAdapter (src/types.ts) has exactly
+ *     the seven documented methods and no payment/order/admin method;
+ *     getCheckoutUrl's doc comment states it must NOT authorize/capture/
+ *     process payment.
+ * 30. Custom HONESTY: README's first line is the not-a-runnable-server
+ *     warning; every store.ts method's thrown Error literally starts with
+ *     "IMPLEMENT-THIS"; server.ts's startup check reads that exact marker
+ *     and never calls the adapter to detect it (source-text check, not
+ *     live-invoke, not a separate flag).
+ * 31. Custom no-secrets + loadEnv-first-import (same structural checks as
+ *     Woo/Wix) + README UCP-conformance disclosure + determinism/purity.
  *
  * Run: node --experimental-strip-types test_artifacts.ts
  */
@@ -106,6 +127,26 @@ import { runArtifacts, decodeFileTree, type ArtifactContext } from "./artifacts/
 const GOLDEN_WOOCOMMERCE: Record<string, string> = JSON.parse(
   readFileSync(`${(import.meta as any).dirname}/test_fixtures/mcp_scaffold_woocommerce_golden.json`, "utf8"),
 );
+
+// Captured from the actual Wix provider output immediately BEFORE this
+// session's A1 (tool annotations) + A2 (UCP-conformance disclosure) changes
+// — see test 19b below. Same role as GOLDEN_WOOCOMMERCE above, just a later
+// baseline (Wix didn't exist at the time of the original golden capture).
+const GOLDEN_WIX: Record<string, string> = JSON.parse(
+  readFileSync(`${(import.meta as any).dirname}/test_fixtures/mcp_scaffold_wix_golden.json`, "utf8"),
+);
+
+/** Strips the A1 tool-annotation additions back out of a generated
+ *  server.ts (the explanatory comment block + every `annotations: {...}`
+ *  field) so the remainder can be compared byte-for-byte against a
+ *  pre-annotations golden fixture — used by both the WooCommerce and Wix
+ *  regression tests (test 19 / 19b) to prove annotations are the ONLY
+ *  server.ts change, not just "some" change. */
+function stripAnnotations(code: string): string {
+  return code
+    .replace(/\/\/ Tool annotations[\s\S]*?they never replace it\.\n\n/, "")
+    .replace(/^\s*annotations: \{[^}]*\},\n/gm, "");
+}
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown) {
@@ -830,10 +871,6 @@ function capsSignals(checkout: SignalRow["status"], cart: SignalRow["status"], c
   check("mcp_scaffold: platform='shopify' -> returns null", draft === null, draft);
 }
 {
-  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "custom" });
-  check("mcp_scaffold: platform='custom' -> returns null", draft === null, draft);
-}
-{
   const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("pass", "pass", "pass"), platform: "woocommerce" });
   check("mcp_scaffold: WooCommerce but checkout/cart/catalog already all passing -> null", draft === null, draft);
 }
@@ -842,11 +879,30 @@ function capsSignals(checkout: SignalRow["status"], cart: SignalRow["status"], c
   check("mcp_scaffold: Wix but checkout/cart/catalog already all passing -> null", draft === null, draft);
 }
 {
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("pass", "pass", "pass"), platform: "custom" });
+  check("mcp_scaffold: Custom but checkout/cart/catalog already all passing -> null", draft === null, draft);
+}
+{
   const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "wix", rootUrl: "https://mystore.example.com" });
-  check("mcp_scaffold: Wix + capability gap -> draft produced (Wix tree, not Woo)", draft !== null, draft);
+  check("mcp_scaffold: Wix + capability gap -> draft produced (Wix tree, not Woo/Custom)", draft !== null, draft);
   const tree = draft ? decodeFileTree(draft.content) : null;
   const paths = tree?.files.map((f) => f.path) ?? [];
-  check("mcp_scaffold: Wix draft contains src/wix.ts, not src/woocommerce.ts", paths.includes("src/wix.ts") && !paths.includes("src/woocommerce.ts"), paths);
+  check(
+    "mcp_scaffold: Wix draft contains src/wix.ts, not src/woocommerce.ts or src/store.ts",
+    paths.includes("src/wix.ts") && !paths.includes("src/woocommerce.ts") && !paths.includes("src/store.ts"),
+    paths,
+  );
+}
+{
+  const draft = generateMcpScaffoldArtifact({ manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "custom", rootUrl: "https://mystore.example.com" });
+  check("mcp_scaffold: Custom + capability gap -> draft produced (Custom tree, not Woo/Wix)", draft !== null, draft);
+  const tree = draft ? decodeFileTree(draft.content) : null;
+  const paths = tree?.files.map((f) => f.path) ?? [];
+  check(
+    "mcp_scaffold: Custom draft contains src/store.ts + src/types.ts, not src/woocommerce.ts or src/wix.ts",
+    paths.includes("src/store.ts") && paths.includes("src/types.ts") && !paths.includes("src/woocommerce.ts") && !paths.includes("src/wix.ts"),
+    paths,
+  );
 }
 
 // 19. REGRESSION: WooCommerce output after the refactor, compared file-by-
@@ -865,17 +921,52 @@ function capsSignals(checkout: SignalRow["status"], cart: SignalRow["status"], c
   const tree = decodeFileTree(draft!.content)!;
   const fileByPath = new Map(tree.files.map((f) => [f.path, f.contents]));
 
-  // Byte-identical files (unaffected by the shared-across-platforms refactor).
-  // GOLDEN_WOOCOMMERCE (test_fixtures/mcp_scaffold_woocommerce_golden.json)
-  // was captured from the pre-refactor single-file generator's ACTUAL output
-  // (not hand-written) — the exact four files this refactor left untouched.
-  check("mcp_scaffold REGRESSION: README.md byte-identical to pre-refactor", fileByPath.get("README.md") === GOLDEN_WOOCOMMERCE["README.md"], "mismatch");
+  // Byte-identical files (unaffected by the shared-across-platforms refactor
+  // OR by this session's A1/A2 changes, which only ever touch server.ts and
+  // README.md — see below). GOLDEN_WOOCOMMERCE
+  // (test_fixtures/mcp_scaffold_woocommerce_golden.json) was captured from
+  // the pre-refactor single-file generator's ACTUAL output (not hand-written).
   check("mcp_scaffold REGRESSION: package.json byte-identical to pre-refactor", fileByPath.get("package.json") === GOLDEN_WOOCOMMERCE["package.json"], "mismatch");
-  check("mcp_scaffold REGRESSION: server.ts byte-identical to pre-refactor", fileByPath.get("src/server.ts") === GOLDEN_WOOCOMMERCE["src/server.ts"], "mismatch");
   check("mcp_scaffold REGRESSION: woocommerce.ts byte-identical to pre-refactor", fileByPath.get("src/woocommerce.ts") === GOLDEN_WOOCOMMERCE["src/woocommerce.ts"], "mismatch");
 
-  // Deliberately-changed pieces: same MEANING, disclosed different wording —
-  // asserted precisely so a future accidental change is still caught.
+  // server.ts: this session's A1 change (tool annotations) is the ONLY
+  // difference — proven by stripping the annotation fields + their
+  // explanatory comment back out and comparing the remainder byte-for-byte.
+  const serverGenerated = fileByPath.get("src/server.ts")!;
+  const serverGolden = GOLDEN_WOOCOMMERCE["src/server.ts"];
+  check("mcp_scaffold REGRESSION: server.ts now differs from pre-refactor (disclosed — A1 tool annotations)", serverGenerated !== serverGolden, "expected a difference");
+  check(
+    "mcp_scaffold REGRESSION: server.ts is byte-identical to pre-refactor once the A1 annotations are stripped back out",
+    stripAnnotations(serverGenerated) === serverGolden,
+    { stripped: stripAnnotations(serverGenerated), golden: serverGolden },
+  );
+  check("mcp_scaffold REGRESSION: server.ts carries all seven tool annotations", (serverGenerated.match(/annotations: \{/g) ?? []).length === 7, serverGenerated);
+
+  // README.md: this session's A2 change (UCP-conformance disclosure,
+  // replacing the old "follows the same vocabulary" line) is the ONLY
+  // difference — proven two ways: (1) the exact old line is gone and the
+  // new section is present; (2) the untouched suffix from "## Prerequisites"
+  // onward is byte-identical, so nothing else in the document moved.
+  const readmeGenerated = fileByPath.get("README.md")!;
+  const readmeGolden = GOLDEN_WOOCOMMERCE["README.md"];
+  check("mcp_scaffold REGRESSION: README.md now differs from pre-refactor (disclosed — A2 UCP-conformance disclosure)", readmeGenerated !== readmeGolden, "expected a difference");
+  check(
+    "mcp_scaffold REGRESSION: README.md no longer claims to follow UCP's tool vocabulary (golden did; generated doesn't)",
+    readmeGolden.includes("Its tools follow the same catalog/cart vocabulary") && !readmeGenerated.includes("Its tools follow the same catalog/cart vocabulary"),
+    { readmeGenerated, readmeGolden },
+  );
+  check("mcp_scaffold REGRESSION: README.md carries the new UCP protocol-conformance disclosure section", readmeGenerated.includes("About UCP protocol conformance"), readmeGenerated);
+  const prereqGenerated = readmeGenerated.slice(readmeGenerated.indexOf("## Prerequisites"));
+  const prereqGolden = readmeGolden.slice(readmeGolden.indexOf("## Prerequisites"));
+  check(
+    "mcp_scaffold REGRESSION: README.md content from ## Prerequisites onward is byte-identical to pre-refactor (nothing else moved)",
+    prereqGenerated.length > 0 && prereqGenerated === prereqGolden,
+    { prereqGenerated, prereqGolden },
+  );
+
+  // Deliberately-changed pieces from the ORIGINAL platform-generalization
+  // refactor: same MEANING, disclosed different wording — still asserted
+  // precisely so a future accidental change is still caught.
   const loadEnv = fileByPath.get("src/loadEnv.ts")!;
   check("mcp_scaffold REGRESSION: loadEnv.ts no longer names woocommerce.ts specifically (now shared)", !loadEnv.includes("woocommerce.ts"), loadEnv);
   check("mcp_scaffold REGRESSION: loadEnv.ts still documents the same import-order requirement", loadEnv.includes("MUST be the FIRST import"), loadEnv);
@@ -886,6 +977,61 @@ function capsSignals(checkout: SignalRow["status"], cart: SignalRow["status"], c
     flaggedLine,
   );
   check("mcp_scaffold REGRESSION: shared flagged line still conveys the same boundary", flaggedLine.includes("Payment is intentionally NOT handled"), flaggedLine);
+}
+
+// ---------------------------------------------------------------------------
+// 19b. Same REGRESSION treatment for Wix, against its own golden fixture
+//      (captured just before this session's A1/A2 changes — Wix didn't exist
+//      at the time of the original golden capture, so there's no earlier
+//      baseline to compare against; this one covers exactly the changes
+//      made in this session, same rigor as test 19 above).
+// ---------------------------------------------------------------------------
+{
+  const draft = generateMcpScaffoldArtifact({
+    manifest: NO_MANIFEST,
+    feed: null,
+    signals: capsSignals("fail", "fail", "fail"),
+    platform: "wix",
+    rootUrl: "https://mystore.example.com",
+  });
+  const tree = decodeFileTree(draft!.content)!;
+  const fileByPath = new Map(tree.files.map((f) => [f.path, f.contents]));
+
+  check("mcp_scaffold (Wix) REGRESSION: package.json byte-identical to pre-A1/A2", fileByPath.get("package.json") === GOLDEN_WIX["package.json"], "mismatch");
+  check("mcp_scaffold (Wix) REGRESSION: tsconfig.json byte-identical to pre-A1/A2", fileByPath.get("tsconfig.json") === GOLDEN_WIX["tsconfig.json"], "mismatch");
+  check("mcp_scaffold (Wix) REGRESSION: .env.example byte-identical to pre-A1/A2", fileByPath.get(".env.example") === GOLDEN_WIX[".env.example"], "mismatch");
+  check("mcp_scaffold (Wix) REGRESSION: loadEnv.ts byte-identical to pre-A1/A2", fileByPath.get("src/loadEnv.ts") === GOLDEN_WIX["src/loadEnv.ts"], "mismatch");
+  check("mcp_scaffold (Wix) REGRESSION: wix.ts byte-identical to pre-A1/A2 (A1/A2 only ever touch server.ts + README.md)", fileByPath.get("src/wix.ts") === GOLDEN_WIX["src/wix.ts"], "mismatch");
+
+  const serverGenerated = fileByPath.get("src/server.ts")!;
+  const serverGolden = GOLDEN_WIX["src/server.ts"];
+  check("mcp_scaffold (Wix) REGRESSION: server.ts now differs from pre-A1/A2 (disclosed — A1 tool annotations)", serverGenerated !== serverGolden, "expected a difference");
+  check(
+    "mcp_scaffold (Wix) REGRESSION: server.ts is byte-identical to pre-A1/A2 once the A1 annotations are stripped back out",
+    stripAnnotations(serverGenerated) === serverGolden,
+    { stripped: stripAnnotations(serverGenerated), golden: serverGolden },
+  );
+  check("mcp_scaffold (Wix) REGRESSION: server.ts carries all seven tool annotations", (serverGenerated.match(/annotations: \{/g) ?? []).length === 7, serverGenerated);
+
+  const readmeGenerated = fileByPath.get("README.md")!;
+  const readmeGolden = GOLDEN_WIX["README.md"];
+  check("mcp_scaffold (Wix) REGRESSION: README.md now differs from pre-A1/A2 (disclosed — A2 UCP-conformance disclosure)", readmeGenerated !== readmeGolden, "expected a difference");
+  check(
+    "mcp_scaffold (Wix) REGRESSION: README.md no longer claims to follow UCP's tool vocabulary",
+    readmeGolden.includes("Its tools follow the same catalog/cart vocabulary") && !readmeGenerated.includes("Its tools follow the same catalog/cart vocabulary"),
+    { readmeGenerated, readmeGolden },
+  );
+  check("mcp_scaffold (Wix) REGRESSION: README.md carries the new UCP protocol-conformance disclosure section", readmeGenerated.includes("About UCP protocol conformance"), readmeGenerated);
+  // Wix's README uses "## About the permissions you're granting" (not
+  // "## Prerequisites") as the next unaffected section right after the
+  // disclosure — same suffix-identity technique as test 19.
+  const suffixGenerated = readmeGenerated.slice(readmeGenerated.indexOf("## About the permissions you're granting"));
+  const suffixGolden = readmeGolden.slice(readmeGolden.indexOf("## About the permissions you're granting"));
+  check(
+    "mcp_scaffold (Wix) REGRESSION: README.md content from the scope-disclosure section onward is byte-identical to pre-A1/A2",
+    suffixGenerated.length > 0 && suffixGenerated === suffixGolden,
+    { suffixGenerated, suffixGolden },
+  );
 }
 
 // 20. WooCommerce + a genuine capability gap -> generates the full file-tree.
@@ -1200,6 +1346,244 @@ let wixScaffoldDraft: ReturnType<typeof generateMcpScaffoldArtifact>;
 
   const again = generateMcpScaffoldArtifact(ctx);
   check("mcp_scaffold (Wix) purity: identical output across repeated calls", JSON.stringify(result) === JSON.stringify(again));
+}
+
+// ---------------------------------------------------------------------------
+// mcp_scaffold generator — Custom (bespoke store) provider
+// ---------------------------------------------------------------------------
+
+// 28. Custom + a genuine capability gap -> generates the reference-
+//     implementation file-tree.
+let customScaffoldDraft: ReturnType<typeof generateMcpScaffoldArtifact>;
+{
+  customScaffoldDraft = generateMcpScaffoldArtifact({
+    manifest: NO_MANIFEST,
+    feed: null,
+    signals: capsSignals("fail", "fail", "fail"),
+    platform: "custom",
+    rootUrl: "https://mystore.example.com",
+  });
+  check("mcp_scaffold (Custom): draft produced", customScaffoldDraft !== null, customScaffoldDraft);
+  check("mcp_scaffold (Custom): artifact_type is mcp_scaffold", customScaffoldDraft?.artifact_type === "mcp_scaffold");
+  check("mcp_scaffold (Custom): target_url is the mcp-server folder", customScaffoldDraft?.target_url === "mcp-server", customScaffoldDraft?.target_url);
+  check(
+    "mcp_scaffold (Custom): resolves_signal_keys is always empty (never claimed resolved — an unimplemented scaffold resolves nothing, even more clearly than the other providers)",
+    customScaffoldDraft?.resolves_signal_keys.length === 0,
+    customScaffoldDraft?.resolves_signal_keys,
+  );
+
+  const tree = customScaffoldDraft ? decodeFileTree(customScaffoldDraft.content) : null;
+  check("mcp_scaffold (Custom): content decodes as a valid file tree", tree !== null, customScaffoldDraft?.content);
+  const paths = tree?.files.map((f) => f.path) ?? [];
+  check(
+    "mcp_scaffold (Custom): generates the full expected reference-implementation file-tree",
+    ["README.md", "package.json", "tsconfig.json", ".env.example", "src/loadEnv.ts", "src/types.ts", "src/store.ts", "src/server.ts"].every((p) => paths.includes(p)),
+    paths,
+  );
+  check(
+    "mcp_scaffold (Custom): flagged changelog states this is a reference implementation, not a working server",
+    !!customScaffoldDraft && customScaffoldDraft.changelog.flagged.some((f) => f.toLowerCase().includes("reference implementation")),
+    customScaffoldDraft?.changelog,
+  );
+}
+
+// 29. BOUNDARY-BY-CONTRACT: StoreAdapter (src/types.ts) has exactly the
+//     seven documented methods and no payment/order/admin method;
+//     getCheckoutUrl's doc comment states it must NOT process payment.
+{
+  const tree = decodeFileTree(customScaffoldDraft!.content)!;
+  const typesSrc = tree.files.find((f) => f.path === "src/types.ts")!.contents;
+  const storeSrc = tree.files.find((f) => f.path === "src/store.ts")!.contents;
+  const typesCode = stripComments(typesSrc);
+
+  const adapterMatch = typesCode.match(/export interface StoreAdapter \{([\s\S]*?)\n\}/);
+  check("mcp_scaffold (Custom): src/types.ts declares the StoreAdapter interface", !!adapterMatch, typesCode);
+  const adapterBody = adapterMatch?.[1] ?? "";
+  const methodNames = [...adapterBody.matchAll(/^\s*(\w+)\(/gm)].map((m) => m[1]);
+  check(
+    "mcp_scaffold (Custom): StoreAdapter has exactly the seven documented methods, nothing more",
+    JSON.stringify([...methodNames].sort()) ===
+      JSON.stringify(["addToCart", "getCart", "getCheckoutUrl", "getProduct", "removeCartItem", "searchProducts", "updateCartItem"].sort()),
+    methodNames,
+  );
+  check(
+    "mcp_scaffold (Custom): StoreAdapter has no payment/order/admin method (the boundary IS this absence)",
+    !/pay|charge|order|customer|admin/i.test(methodNames.join(" ")),
+    methodNames,
+  );
+  check(
+    "mcp_scaffold (Custom): the interface documents that it intentionally cannot express payment authorization",
+    // Collapse doc-comment line-continuation markers ("\n * ") before
+    // whitespace-normalizing — a plain \s+ collapse leaves the literal "*"
+    // in place, splitting "payment authorization" into "payment * authorization".
+    typesSrc
+      .toLowerCase()
+      .replace(/[\r\n]+\s*\*\s?/g, " ")
+      .replace(/\s+/g, " ")
+      .includes("intentionally cannot express payment authorization"),
+    typesSrc,
+  );
+  check(
+    "mcp_scaffold (Custom): getCheckoutUrl's doc comment states it must NOT authorize/capture/process payment",
+    typesSrc.includes("must NOT authorize, capture, or process payment"),
+    typesSrc,
+  );
+  check(
+    "mcp_scaffold (Custom): store.ts's getCheckoutUrl stub ALSO documents the must-not-process-payment instruction (not just types.ts)",
+    storeSrc.includes("must NOT authorize, capture, or process payment") || storeSrc.includes("Must NOT process payment itself"),
+    storeSrc,
+  );
+}
+
+// 30. HONESTY: README's first line is the not-runnable warning; every
+//     store.ts method literally throws an "IMPLEMENT-THIS" string; the
+//     startup check reads that exact marker via source text, never by
+//     invoking the adapter (side-effect-safe) and never via a separate
+//     boolean flag (can't drift out of sync).
+{
+  const tree = decodeFileTree(customScaffoldDraft!.content)!;
+  const readme = tree.files.find((f) => f.path === "README.md")!.contents;
+  const storeSrc = tree.files.find((f) => f.path === "src/store.ts")!.contents;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+
+  check(
+    "mcp_scaffold (Custom) README: first line is the not-a-runnable-server warning",
+    readme.trimStart().startsWith("# Custom Store MCP Shopping Server") &&
+      readme.slice(0, 400).includes("This is a reference implementation, not a runnable server."),
+    readme.slice(0, 400),
+  );
+  check(
+    "mcp_scaffold (Custom) README: states the developer must implement src/store.ts before it works",
+    readme.includes("You must\nimplement the store adapter (see `src/store.ts`)") || readme.toLowerCase().includes("implement the store adapter"),
+    readme.slice(0, 400),
+  );
+
+  // Every method in the seven-method contract throws literally inside the
+  // THROWN STRING (not a comment) — required so Function.prototype.toString()
+  // still finds it even if store.ts's comments are ever stripped.
+  const stubThrows = [...storeSrc.matchAll(/throw new Error\(\s*"(IMPLEMENT-THIS[^"]*)"/g)].map((m) => m[1]);
+  check("mcp_scaffold (Custom): store.ts has exactly seven IMPLEMENT-THIS stub throws (one per method)", stubThrows.length === 7, stubThrows);
+  check(
+    "mcp_scaffold (Custom): every stub's marker lives in the thrown string literal, not a comment (verified by stripping comments first, marker still present)",
+    (stripComments(storeSrc).match(/IMPLEMENT-THIS/g) ?? []).length === 7,
+    stripComments(storeSrc),
+  );
+
+  check(
+    "mcp_scaffold (Custom): server.ts's startup check reads source text via .toString(), never calls the adapter",
+    serverSrc.includes(".toString().includes(STUB_MARKER)") && !serverSrc.includes("adapterImplemented"),
+    serverSrc,
+  );
+  check("mcp_scaffold (Custom): the stub marker constant is literally \"IMPLEMENT-THIS\"", serverSrc.includes('STUB_MARKER = "IMPLEMENT-THIS"'), serverSrc);
+  check(
+    "mcp_scaffold (Custom): startup check names the still-stubbed methods explicitly in its failure message",
+    serverSrc.includes("stillStubbed.join"),
+    serverSrc,
+  );
+  check(
+    "mcp_scaffold (Custom): server.ts documents that this check can't verify CORRECTNESS, only that implementation has started",
+    serverSrc.toLowerCase().includes("not that your implementation is") || serverSrc.toLowerCase().includes("only confirms the adapter has been started"),
+    serverSrc,
+  );
+}
+
+// 31. No secrets/real values + loadEnv-first-import (same structural checks
+//     as Woo/Wix) + README UCP-conformance disclosure + determinism/purity.
+{
+  const tree = decodeFileTree(customScaffoldDraft!.content)!;
+  const readme = tree.files.find((f) => f.path === "README.md")!.contents;
+  const envExample = tree.files.find((f) => f.path === ".env.example")!.contents;
+  const serverSrc = tree.files.find((f) => f.path === "src/server.ts")!.contents;
+  const storeSrc = tree.files.find((f) => f.path === "src/store.ts")!.contents;
+  const loadEnvSrc = tree.files.find((f) => f.path === "src/loadEnv.ts")!.contents;
+
+  check("mcp_scaffold (Custom): README.md personalizes with the real store domain (a label, not a secret)", readme.includes("mystore.example.com"), readme);
+  check(
+    "mcp_scaffold (Custom): .env.example contains obvious REPLACE placeholders for STORE_BASE_URL + CHECKOUT_URL",
+    envExample.includes("REPLACE-WITH-YOUR-STORE-URL") && envExample.includes("REPLACE-WITH-YOUR-CHECKOUT-URL"),
+    envExample,
+  );
+  check("mcp_scaffold (Custom): no real store domain baked into .env.example", !envExample.includes("mystore.example.com"), envExample);
+  check("mcp_scaffold (Custom): no real store domain baked into src/server.ts", !serverSrc.includes("mystore.example.com"), serverSrc);
+  check("mcp_scaffold (Custom): no real store domain baked into src/store.ts", !storeSrc.includes("mystore.example.com"), storeSrc);
+
+  const firstImportLine = stripComments(serverSrc)
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("import "));
+  check("mcp_scaffold (Custom): loadEnv.js is server.ts's FIRST import (ESM import-order fix)", firstImportLine?.includes("./loadEnv.js") ?? false, firstImportLine);
+  check("mcp_scaffold (Custom): loadEnv.ts has no imports of its own", !stripComments(loadEnvSrc).includes("import "), loadEnvSrc);
+  check(
+    "mcp_scaffold (Custom): loadEnv.ts is IDENTICAL to the WooCommerce/Wix one (truly shared, not duplicated)",
+    loadEnvSrc === decodeFileTree(scaffoldDraft!.content)!.files.find((f) => f.path === "src/loadEnv.ts")!.contents,
+    null,
+  );
+
+  check("mcp_scaffold (Custom) README: carries the UCP protocol-conformance disclosure section", readme.includes("About UCP protocol conformance"), readme);
+  check(
+    "mcp_scaffold (Custom) README: mentions Adeptra's paid setup-service option, factually, not a hard sell",
+    readme.toLowerCase().includes("paid setup service"),
+    readme,
+  );
+
+  const ctx: ArtifactContext = { manifest: NO_MANIFEST, feed: null, signals: capsSignals("fail", "fail", "fail"), platform: "custom" };
+  const result = generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold (Custom) purity: synchronous, not a Promise", !(result instanceof Promise));
+
+  const beforeSignals = JSON.stringify(ctx.signals);
+  generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold (Custom) purity: does not mutate ctx.signals", JSON.stringify(ctx.signals) === beforeSignals);
+
+  const again = generateMcpScaffoldArtifact(ctx);
+  check("mcp_scaffold (Custom) purity: identical output across repeated calls", JSON.stringify(result) === JSON.stringify(again));
+}
+
+// ---------------------------------------------------------------------------
+// 27. Tool annotations: present and correct on every tool, in all three
+//     providers, plus the SDK-caveat comment quoted verbatim.
+// ---------------------------------------------------------------------------
+{
+  const EXPECTED_ANNOTATIONS: Record<string, string> = {
+    search_products: "{ readOnlyHint: true, destructiveHint: false, openWorldHint: true }",
+    get_product: "{ readOnlyHint: true, destructiveHint: false, openWorldHint: true }",
+    add_to_cart: "{ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }",
+    update_cart_item: "{ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }",
+    remove_cart_item: "{ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }",
+    get_cart: "{ readOnlyHint: true, destructiveHint: false, openWorldHint: true }",
+    begin_checkout: "{ readOnlyHint: false, destructiveHint: false, openWorldHint: true }",
+  };
+  const CAVEAT_SNIPPETS = [
+    "all properties in ToolAnnotations are",
+    "**hints**",
+    "Clients",
+    "should never make tool use decisions based on ToolAnnotations received",
+    "from untrusted servers.",
+  ];
+
+  for (const [label, draft] of [
+    ["WooCommerce", scaffoldDraft],
+    ["Wix", wixScaffoldDraft],
+    ["Custom", customScaffoldDraft],
+  ] as const) {
+    const serverSrc = decodeFileTree(draft!.content)!.files.find((f) => f.path === "src/server.ts")!.contents;
+    for (const [toolName, expected] of Object.entries(EXPECTED_ANNOTATIONS)) {
+      const toolBlockMatch = serverSrc.match(new RegExp(`"${toolName}"[\\s\\S]*?annotations: (\\{[^}]*\\})`));
+      check(`mcp_scaffold (${label}) annotations: ${toolName} has the expected annotations object`, toolBlockMatch?.[1] === expected, {
+        found: toolBlockMatch?.[1],
+        expected,
+      });
+    }
+    check(
+      `mcp_scaffold (${label}) annotations: SDK caveat comment quoted verbatim (annotations are hints, not a security boundary)`,
+      CAVEAT_SNIPPETS.every((s) => serverSrc.includes(s)),
+      serverSrc,
+    );
+    check(
+      `mcp_scaffold (${label}) annotations: comment states annotations supplement, never replace, this server's own code discipline`,
+      serverSrc.includes("they never replace it"),
+      serverSrc,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

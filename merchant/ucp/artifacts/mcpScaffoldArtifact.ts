@@ -23,9 +23,14 @@
  * mcp-server/...", "...point your UCP manifest...", the payment-boundary
  * flag). Each platform's actual file contents (API client, README, env vars,
  * deps) live in a sibling provider module — scaffold/woocommerce.ts,
- * scaffold/wix.ts — that exports one build(ctx): ScaffoldProvider function.
- * Adding a third platform means adding one more provider module and one more
- * line in PLATFORM_PROVIDERS; this file's assembly logic doesn't change.
+ * scaffold/wix.ts, scaffold/custom.ts — that exports one build(ctx):
+ * ScaffoldProvider function. Adding another platform means adding one more
+ * provider module and one more line in PLATFORM_PROVIDERS; this file's
+ * assembly logic doesn't change. custom.ts is a different kind of provider
+ * than the other two — it generates a reference implementation with the
+ * store-specific data access left as integration points, not a working
+ * client, since a bespoke store has no API to write one against. See its
+ * own header comment.
  *
  * MULTI-FILE OUTPUT: ArtifactDraft.content is one string, but a server is many
  * files. content holds a tagged, versioned JSON payload (see
@@ -50,10 +55,12 @@ import { encodeFileTree } from "./types.ts";
 import { TARGET_FOLDER, type ScaffoldProvider } from "./scaffold/shared.ts";
 import { build as buildWooCommerceScaffold } from "./scaffold/woocommerce.ts";
 import { build as buildWixScaffold } from "./scaffold/wix.ts";
+import { build as buildCustomScaffold } from "./scaffold/custom.ts";
 
 const PLATFORM_PROVIDERS: Record<string, (ctx: ArtifactContext) => ScaffoldProvider> = {
   woocommerce: buildWooCommerceScaffold,
   wix: buildWixScaffold,
+  custom: buildCustomScaffold,
 };
 
 function byKey(signals: SignalRow[]): Map<string, SignalRow> {
