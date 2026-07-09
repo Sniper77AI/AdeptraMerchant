@@ -16,6 +16,17 @@
  *   runExport — the exact body of what exportRun.ts used to do inline: fetch
  *     → build bundle plan → upload/sign → record. Throws typed errors
  *     (RunNotFoundError, NoArtifactsError) for the caller to handle.
+ *
+ * Plus the delivery-layer functions backing the report/bundle proxy routes
+ * (merchant/api/report/[runId].ts, merchant/api/bundle/[runId].ts):
+ *   getReportHtml — free, instant, no entitlement check.
+ *   getBundleBytes — the paid deliverable; callers must check isEntitled()
+ *     first (this function itself doesn't gate).
+ *   isEntitled — STUB, always true until billing lands; see its own comment
+ *     for exactly what the real check should query.
+ * Both download functions go straight to Storage via the service-role key
+ * (never minting a signed URL) — the HTTP routes are the front door now,
+ * which is also where entitlement will actually be enforced.
  */
 
 import { runManifestChecks, isManifestMissing } from "./manifestChecks.ts";
@@ -39,12 +50,13 @@ import {
   insertArtifacts,
   getSite,
   fetchRunBundleData,
+  getRunDomain,
   ensureClient,
   upsertIntakeSite,
   type SupabaseConfig,
 } from "./supabaseSink.ts";
 import { buildBundlePlan } from "./export/reportBuilder.ts";
-import { uploadAndRecordExport } from "./export/storageSink.ts";
+import { uploadAndRecordExport, downloadObject, reportPathFor, bundlePathFor } from "./export/storageSink.ts";
 
 // ---------------------------------------------------------------------------
 // Intake — real client + site rows (not the ensureDevSite dev shortcut)
@@ -250,6 +262,12 @@ export class NoArtifactsError extends Error {
 export interface ExportInput {
   runId: string;
   config: SupabaseConfig;
+  // Overrides the URL embedded in the uploaded report's own "Download the
+  // fix bundle" button. Default (used by exportRun.ts's CLI) is the freshly-
+  // signed Storage URL — fine for direct ops use. merchant/api/analyze.ts
+  // passes its own /api/bundle/<runId> route instead, since raw signed
+  // Storage URLs should never reach a browser once that route exists.
+  bundleLinkForReport?: string;
 }
 
 export interface ExportResult {
@@ -269,7 +287,7 @@ export async function runExport(input: ExportInput): Promise<ExportResult> {
   if (data.artifacts.length === 0) throw new NoArtifactsError(runId);
 
   const plan = buildBundlePlan(data);
-  const result = await uploadAndRecordExport(cfg, data.siteId, data.domain, data.runId, plan, data.artifacts.length);
+  const result = await uploadAndRecordExport(cfg, data.siteId, data.domain, data.runId, plan, data.artifacts.length, input.bundleLinkForReport);
 
   return {
     exportId: result.exportId,
@@ -280,4 +298,88 @@ export async function runExport(input: ExportInput): Promise<ExportResult> {
     status: data.status,
     artifactCount: data.artifacts.length,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Report / bundle delivery — the proxy routes' backing functions
+// (merchant/api/report/[runId].ts, merchant/api/bundle/[runId].ts). Both
+// download directly from Storage via the service-role key (downloadObject),
+// never minting or handing out a signed URL — the HTTP routes are the front
+// door, so entitlement (see isEntitled below) can gate access at the one
+// place it's actually enforced.
+// ---------------------------------------------------------------------------
+
+export class ReportNotFoundError extends Error {
+  constructor(runId: string) {
+    super(`report not found for run ${runId} — it may not have been exported yet`);
+    this.name = "ReportNotFoundError";
+  }
+}
+
+export class BundleNotFoundError extends Error {
+  constructor(runId: string) {
+    super(`bundle not found for run ${runId} — it may not have been exported yet`);
+    this.name = "BundleNotFoundError";
+  }
+}
+
+export interface GetReportInput {
+  runId: string;
+  config: SupabaseConfig;
+}
+
+/** Free, instant, no entitlement check — the report is the always-available
+ *  half of a delivery; only the bundle is the paid deliverable (see
+ *  isEntitled). Throws RunNotFoundError if the run doesn't exist,
+ *  ReportNotFoundError if it exists but was never exported. */
+export async function getReportHtml(input: GetReportInput): Promise<string> {
+  const { runId, config: cfg } = input;
+  const domain = await getRunDomain(cfg, runId);
+  if (!domain) throw new RunNotFoundError(runId);
+  const bytes = await downloadObject(cfg, reportPathFor(domain, runId));
+  if (!bytes) throw new ReportNotFoundError(runId);
+  return bytes.toString("utf8");
+}
+
+export interface GetBundleInput {
+  runId: string;
+  config: SupabaseConfig;
+}
+
+export interface BundleResult {
+  bytes: Buffer;
+  filename: string;
+}
+
+/** Caller (the bundle route) is responsible for calling isEntitled() first —
+ *  this function itself doesn't gate, it just fetches. Throws
+ *  RunNotFoundError if the run doesn't exist, BundleNotFoundError if it
+ *  exists but was never exported. */
+export async function getBundleBytes(input: GetBundleInput): Promise<BundleResult> {
+  const { runId, config: cfg } = input;
+  const domain = await getRunDomain(cfg, runId);
+  if (!domain) throw new RunNotFoundError(runId);
+  const bytes = await downloadObject(cfg, bundlePathFor(domain, runId));
+  if (!bytes) throw new BundleNotFoundError(runId);
+  return { bytes, filename: "adeptra-merchant-fix-bundle.zip" };
+}
+
+export interface EntitlementInput {
+  runId: string;
+  config: SupabaseConfig;
+}
+
+/**
+ * STUB — billing/payment doesn't exist yet, so this always returns true; the
+ * bundle route is fully usable today with no real gate. This is the seam
+ * where that lands, not a placeholder to build around: a real implementation
+ * should resolve the run's site's client, then check the client's
+ * `subscriptions` row (status IN ('trialing','active'), or tier='one_time'
+ * with an appropriate one-time grant recorded somewhere). `subscriptions`
+ * already exists in the schema and is scoped exactly right (client_id +
+ * optional site_id) — entitlement doesn't need a new table or column, just
+ * a query against it once billing exists. Do not build that query yet.
+ */
+export async function isEntitled(_input: EntitlementInput): Promise<boolean> {
+  return true;
 }

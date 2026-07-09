@@ -216,6 +216,20 @@ export async function insertArtifacts(
 // run, fetched in one place rather than scattering queries through exportRun.ts.
 // ---------------------------------------------------------------------------
 
+/** Lightweight run→domain lookup — the report/bundle proxy routes need only
+ *  this (to derive the Storage folder path via storageSink.ts's
+ *  reportPathFor/bundlePathFor), not the full fetchRunBundleData fan-out
+ *  (pillars/signals/artifacts) that export report-building needs. Returns
+ *  null when the run doesn't exist. */
+export async function getRunDomain(cfg: SupabaseConfig, runId: string): Promise<string | null> {
+  const rows = await rest<Array<{ sites: { domain: string | null } | null }>>(
+    cfg,
+    "GET",
+    `/rest/v1/analysis_runs?id=eq.${runId}&select=sites(domain)&limit=1`,
+  );
+  return rows[0]?.sites?.domain ?? null;
+}
+
 /** Returns null when run_id doesn't exist. Read-only — never mutates. */
 export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Promise<RunBundleData | null> {
   const runRows = await rest<

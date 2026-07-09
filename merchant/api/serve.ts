@@ -1,9 +1,9 @@
 /**
- * Adeptra Merchant — Local dev server for the intake endpoint (no deployment
- * here; this is purely so merchant/api/analyze.ts is runnable on your own
- * machine before there's ever a Vercel project). Zero dependencies — just
- * node:http, routing GET / (and /index.html) to the static intake form and
- * POST /api/analyze to the real handler.
+ * Adeptra Merchant — Local dev server for the intake + delivery endpoints (no
+ * deployment here; this is purely so merchant/api/*.ts is runnable on your
+ * own machine before there's ever a Vercel project). Zero dependencies —
+ * just node:http, hand-rolling the path-param routing Vercel's [runId].ts
+ * file convention gets for free once actually deployed.
  *
  * Usage: node --experimental-strip-types serve.ts
  * Then open the printed URL in a browser.
@@ -11,13 +11,17 @@
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import handler from "./analyze.ts";
+import analyzeHandler from "./analyze.ts";
+import reportHandler from "./report/[runId].ts";
+import bundleHandler from "./bundle/[runId].ts";
 
 const PORT = Number(process.env.PORT) || 3000;
 const FORM_PATH = `${(import.meta as any).dirname}/public/index.html`;
 
 const server = createServer(async (req, res) => {
-  if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
+  const path = (req.url ?? "").split("?")[0];
+
+  if (req.method === "GET" && (path === "/" || path === "/index.html")) {
     try {
       const html = await readFile(FORM_PATH, "utf8");
       res.statusCode = 200;
@@ -29,8 +33,16 @@ const server = createServer(async (req, res) => {
     }
     return;
   }
-  if (req.method === "POST" && req.url === "/api/analyze") {
-    await handler(req, res);
+  if (req.method === "POST" && path === "/api/analyze") {
+    await analyzeHandler(req, res);
+    return;
+  }
+  if (req.method === "GET" && path.startsWith("/api/report/")) {
+    await reportHandler(req, res);
+    return;
+  }
+  if (req.method === "GET" && path.startsWith("/api/bundle/")) {
+    await bundleHandler(req, res);
     return;
   }
   res.statusCode = 404;

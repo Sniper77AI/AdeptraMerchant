@@ -130,7 +130,10 @@ merchant/
                            # (the smoke-test shortcut) and upsertIntakeSite (real intake — see
                            # pipeline.ts) — the latter dedups on (client_id, root_url), the actual
                            # `sites` UNIQUE constraint, and PATCHes only newly-provided fields on a
-                           # repeat submission rather than silently ignoring an updated answer
+                           # repeat submission rather than silently ignoring an updated answer.
+                           # getRunDomain is a lightweight run→domain lookup for the report/bundle
+                           # proxy routes (just enough to derive the Storage path — not the full
+                           # fetchRunBundleData fan-out that report-building needs)
     pipeline.ts            # Callable pipeline (no process.argv/exit/console.log): runAnalysis,
                            # runExport, ensureSiteFromIntake — the same engine called by the CLIs
                            # below, the HTTP intake endpoint (merchant/api/analyze.ts), and later an
@@ -144,7 +147,11 @@ merchant/
                            # upsertIntakeSite — NOT ensureDevSite's "Adeptra Dev" shortcut — defaulting
                            # clientName to the submitted domain when omitted (documented pre-auth seam:
                            # a shared placeholder name would incorrectly bucket unrelated merchants
-                           # under one client; real accounts replace this once auth/dashboard exist)
+                           # under one client; real accounts replace this once auth/dashboard exist).
+                           # Also: getReportHtml/getBundleBytes (download straight from Storage via
+                           # the service-role key, never minting a signed URL — back the report/bundle
+                           # proxy routes below) and isEntitled (STUB, always true — the seam where
+                           # billing wires in; see its own comment for exactly what to query once it does)
     runLive.ts             # End-to-end CLI (thin wrapper around pipeline.ts's runAnalysis): domain →
                            # live manifest + capability + feed + page cross-check + LLM checks +
                            # policy/contact probes + payment readiness + Merchant Center readiness
@@ -191,8 +198,15 @@ merchant/
       storageSink.ts       # IMPURE: uploads the zip + standalone report.html to the private
                            # "merchant-exports" Storage bucket via the Storage REST API (same
                            # fetch+service-role-key pattern as supabaseSink.ts), mints 30-day
-                           # signed URLs, substitutes the report's download-link token, and
-                           # records an `exports` row (via supabaseSink.insertExport)
+                           # signed URLs, substitutes the report's own "download the fix bundle"
+                           # button target (bundleLinkForReport — defaults to the freshly-signed
+                           # URL for CLI/ops use; the HTTP endpoint overrides it with its own
+                           # /api/bundle/<runId> route so no signed URL ends up baked into the
+                           # HTML), and records an `exports` row (via supabaseSink.insertExport).
+                           # Also exports downloadObject (service-role GET, no signed URL — backs
+                           # the report/bundle proxy routes) and reportPathFor/bundlePathFor (the
+                           # one shared source of truth for the Storage folder convention, used by
+                           # both the upload side here and the download side in pipeline.ts)
     exportRun.ts           # CLI (thin wrapper around pipeline.ts's runExport): node exportRun.ts
                            # <run_id> — fetches a run's data, builds the bundle, uploads it, prints
                            # the report page URL + zip download URL. Separate command from runLive.ts
@@ -213,9 +227,15 @@ merchant/
                            # PATCH-not-duplicate on a repeat submission), runAnalysis (documented
                            # result shape; returns {status:"failed"} — never throws/exits — on a
                            # forced downstream failure), runExport (RunNotFoundError/NoArtifactsError,
-                           # documented success shape), and the endpoint handler (valid POST → 200,
-                           # missing url/platform → 400, non-POST → 405, analysis failure → 500,
-                           # NoArtifactsError from export → 200 with a note, not an error). Mocks
+                           # documented success shape), the intake handler (valid POST → 200 with
+                           # OUR routes as reportUrl/bundleUrl — never the raw signed Storage URL
+                           # runExport returns — missing url/platform → 400, non-POST → 405,
+                           # analysis failure → 500, NoArtifactsError from export → 200 with a note,
+                           # not an error), getReportHtml/getBundleBytes (RunNotFoundError /
+                           # ReportNotFoundError|BundleNotFoundError, correct bytes/text on success),
+                           # isEntitled (stub always true), and the report/bundle route handlers
+                           # (content-type + content-disposition asserted per route, entitlement
+                           # checked before bytes are ever fetched, 404s on not-found). Mocks
                            # PostgREST/Storage via SupabaseConfig.fetcher injection; httpFetcher.ts
                            # (used inside runAnalysis, no injection point of its own) is covered by a
                            # temporary globalThis.fetch swap, restored in a finally block
@@ -231,14 +251,36 @@ merchant/
                            # ensureSiteFromIntake → runAnalysis → runExport → JSON response. A store
                            # that's already fully compliant can legitimately produce zero artifacts —
                            # NoArtifactsError from export still yields 200 with reportUrl/bundleUrl:
-                           # null + a note, not a failure. createHandler(deps) exists purely for
-                           # testability (dependency injection, no mocking framework needed); the
-                           # default export used by serve.ts/Vercel is createHandler() with the real
-                           # pipeline.ts functions. Reads env vars (SUPABASE_URL,
+                           # null + a note, not a failure. reportUrl/bundleUrl in the response are
+                           # OUR OWN proxy routes (/api/report/<runId>, /api/bundle/<runId>) — never
+                           # the raw signed Storage URLs runExport returns; also passes
+                           # bundleLinkForReport so the report page's OWN embedded download button
+                           # points at our route too, not a URL baked into the HTML. createHandler(deps)
+                           # exists purely for testability (dependency injection, no mocking framework
+                           # needed); the default export used by serve.ts/Vercel is createHandler()
+                           # with the real pipeline.ts functions. Reads env vars (SUPABASE_URL,
                            # SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY) — same names as .env today
+    report/
+      [runId].ts            # GET /api/report/<runId> — the ACTUAL fix for report.html not rendering
+                           # in a browser (see Open items: Supabase Storage forces text/plain + a
+                           # sandboxed CSP on any HTML it serves directly, a deliberate anti-phishing
+                           # platform policy with no header-based bypass). Fetches report.html
+                           # server-side via pipeline.ts's getReportHtml (service-role key, never a
+                           # signed URL) and re-serves it with Content-Type: text/html; charset=utf-8
+                           # + Content-Disposition: inline. Free, instant, no entitlement check — the
+                           # report is the always-available half of a delivery. Same createHandler(deps)
+                           # testability pattern and [param].ts Vercel dynamic-route file convention
+                           # as analyze.ts
+    bundle/
+      [runId].ts            # GET /api/bundle/<runId> — the paid deliverable. Checks isEntitled()
+                           # BEFORE fetching anything from Storage; 402 when not entitled (today:
+                           # never, since isEntitled is a stub — see pipeline.ts). Re-serves
+                           # bundle.zip (via getBundleBytes, service-role key, never a signed URL)
+                           # with Content-Type: application/zip + Content-Disposition: attachment
     serve.ts               # Local dev server only (node:http, zero dependencies) — routes GET / to
-                           # the static form and POST /api/analyze to the real handler. Not deployed
-                           # anywhere; exists purely so analyze.ts is runnable on your own machine
+                           # the static form, POST /api/analyze / GET /api/report/* / GET
+                           # /api/bundle/* to the real handlers. Not deployed anywhere; exists purely
+                           # so merchant/api/*.ts is runnable on your own machine
                            # before there's ever a Vercel project
     public/
       index.html           # The thin intake form: store URL, platform dropdown, optional feed URL,
@@ -321,10 +363,17 @@ Supabase Storage as signed, 30-day URLs):
 node --experimental-strip-types exportRun.ts <run_id>
 ```
 
-Prints `report page: <url>` and `download zip: <url>`. The report page has a working "Download the
-fix bundle" button linking to the zip; the zip also contains an offline copy of the same report
+Prints `report page: <url>` and `download zip: <url>` — real signed Storage URLs, meant for direct
+CLI/ops use (there's no browser involved here). The report page has a working "Download the fix
+bundle" button linking to the zip; the zip also contains an offline copy of the same report
 (`report.html`), the markdown version (`report.md`), a `README.txt`, and one file per generated
 artifact. Fails loudly if the run doesn't exist or has no artifacts.
+
+> Note: opening a signed `report.html` URL directly in a browser shows raw HTML source instead of
+> rendering — Supabase Storage deliberately forces `Content-Type: text/plain` plus a sandboxed CSP
+> on any HTML object it serves (an anti-phishing platform policy; no bypass via upload headers).
+> That's what the report/bundle proxy routes below are for — always use those in a browser, never a
+> raw signed URL.
 
 ```bash
 node --experimental-strip-types test_export.ts
@@ -352,6 +401,16 @@ not the `ensureDevSite` shortcut below), then `runAnalysis`, then `runExport`, a
 good outcome, not an error. Deploying this for real later is a config change (set the Vercel project
 root to `merchant/`), not a rewrite — `merchant/api/analyze.ts` is a plain Node `http` handler with
 no Vercel-specific imports.
+
+The report and bundle links the form renders are **our own routes**
+(`/api/report/<runId>`, `/api/bundle/<runId>`) — never a raw signed Storage URL. The report route
+proxies `report.html` from Storage server-side and re-serves it with the correct
+`Content-Type`/`Content-Disposition` so it actually renders (see the note above); it's free and
+instant, no entitlement check. The bundle route is the paid deliverable — it checks
+`isEntitled(runId)` before fetching anything and returns `402` when that's `false`. Billing doesn't
+exist yet, so `isEntitled` is a stub that always returns `true` (see `pipeline.ts` for exactly what
+the real check should query once it does) — the bundle route is fully usable today, the gate just
+isn't wired to anything real.
 
 > Note: `signals.priority_score` is a `GENERATED ALWAYS` column — the DB computes
 > `impact × weight ÷ effort` itself. The sink deliberately does not send it.
@@ -474,14 +533,40 @@ live-verified against two real stores (skims.com, gymshark.com).**
       a plain Node `http` handler (no `@vercel/node`, zero dependencies) so a later Vercel deployment
       is a config change, not a rewrite; `merchant/api/serve.ts` runs it locally today. Live-verified
       end-to-end through the actual HTTP endpoint (curl, matching exactly what the form's `fetch()`
-      call sends): real client/site creation, real analysis, real export, real signed URLs. One
+      call sends): real client/site creation, real analysis, real export. (Its response originally
+      returned raw signed Storage URLs for the report/bundle links — replaced by the report/bundle
+      proxy routes below, since the report never actually rendered from a signed URL anyway.) One
       regression caught by the required live re-run of `runLive.ts`/`exportRun.ts` before this
       shipped: `exportRun.ts`'s CLI output referenced `result.runId`, but the extracted
       `ExportResult` type didn't carry it — fixed by adding `runId` to `ExportResult`, with a
       regression test added and the live re-run repeated to confirm.
+- [x] Report/bundle delivery proxy routes + entitlement seam: `GET /api/report/<runId>` and
+      `GET /api/bundle/<runId>` (`merchant/api/report/[runId].ts`, `merchant/api/bundle/[runId].ts` —
+      Vercel's `[param].ts` dynamic-route convention) fetch straight from the `merchant-exports`
+      Storage bucket server-side (service-role key, `pipeline.ts`'s `getReportHtml`/`getBundleBytes`)
+      and re-serve the bytes themselves — no signed Storage URL is ever handed to a client for either
+      artifact anymore, including the report page's OWN embedded "download the fix bundle" button
+      (`uploadAndRecordExport` gained a `bundleLinkForReport` override for exactly this). Built
+      because Supabase Storage deliberately forces `Content-Type: text/plain` plus a sandboxed CSP on
+      any HTML object it serves directly — confirmed via Supabase's own GitHub discussions, no bypass
+      via upload headers exists — so a signed `report.html` URL opened as raw source in a browser no
+      matter what content-type was set at upload time; proxying it is the only fix. Live-verified: the
+      report route now serves real HTML with `Content-Type: text/html; charset=utf-8` +
+      `Content-Disposition: inline`, confirmed rendering with correct em-dashes (the mangled-UTF-8
+      symptom from the missing charset is gone); the bundle route serves `Content-Type: application/zip`
+      + `Content-Disposition: attachment`, opened successfully with the real `unzip` utility; grepped
+      the full intake response and the rendered report page for `supabase.co` — zero occurrences.
+      The bundle route checks `isEntitled(runId)` before fetching any bytes and returns `402` when
+      false; `isEntitled` (`pipeline.ts`) is a clearly-marked STUB that always returns `true` — no
+      payment/billing logic exists yet. Recommended entitlement home once billing lands: the existing
+      `subscriptions` table (`client_id` + optional `site_id`, `tier`, `status`) — already scoped
+      exactly right for "does this client/site have an active paid grant," so no new table or column
+      is needed, just a real query against it. No migration added.
 - [ ] Onboarding UI (feed URL, identity-linking opt-out, and Category 6 attestations are all plain
       DB columns today, set via SQL — no dashboard to set them yet; the intake form is a first step
       but isn't a full dashboard)
+- [ ] Billing/entitlement: `isEntitled()` is a stub (always `true`) — see the recommendation above for
+      where the real check should live (`subscriptions` table, no new schema needed)
 
 ### Open items / known shortcuts
 

@@ -22,15 +22,40 @@
  * 4. Endpoint handler (createHandler with injected fake pipeline deps): a
  *    valid POST returns the expected 200 JSON; missing url/platform return
  *    400; a non-POST method returns 405; an analysis failure returns 500;
- *    NoArtifactsError from export still returns 200 with a note.
+ *    NoArtifactsError from export still returns 200 with a note; the
+ *    reportUrl/bundleUrl it returns are OUR routes (/api/report/.., /api/
+ *    bundle/..), never a raw signed Storage URL.
+ * 5. getReportHtml / getBundleBytes: RunNotFoundError when the run doesn't
+ *    exist; ReportNotFoundError/BundleNotFoundError when it exists but was
+ *    never exported; returns the object's bytes/text on success.
+ * 6. isEntitled: stub always returns true.
+ * 7. Report route handler: valid GET renders with text/html content-type +
+ *    inline disposition; RunNotFoundError/ReportNotFoundError -> 404;
+ *    non-GET -> 405.
+ * 8. Bundle route handler: not-entitled -> 402 (bytes never fetched);
+ *    entitled -> 200 with application/zip + attachment disposition;
+ *    BundleNotFoundError -> 404.
  *
  * Run: node --experimental-strip-types test_pipeline.ts
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { ensureSiteFromIntake, runAnalysis, runExport, RunNotFoundError, NoArtifactsError } from "./pipeline.ts";
+import {
+  ensureSiteFromIntake,
+  runAnalysis,
+  runExport,
+  getReportHtml,
+  getBundleBytes,
+  isEntitled,
+  RunNotFoundError,
+  NoArtifactsError,
+  ReportNotFoundError,
+  BundleNotFoundError,
+} from "./pipeline.ts";
 import type { SupabaseConfig } from "./supabaseSink.ts";
 import { createHandler, type PipelineDeps } from "../api/analyze.ts";
+import { createHandler as createReportHandler, type ReportDeps } from "../api/report/[runId].ts";
+import { createHandler as createBundleHandler, type BundleDeps } from "../api/bundle/[runId].ts";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown) {
@@ -360,7 +385,18 @@ const happyDeps: PipelineDeps = {
     artifactCount: 2,
     artifactTypes: ["ucp_manifest", "feed_fix"],
   }),
-  runExport: async () => ({ exportId: "export-h", reportUrl: "https://example.com/report", bundleUrl: "https://example.com/bundle.zip", domain: "mock-store.test", status: "complete", artifactCount: 2 }),
+  runExport: async () => ({
+    exportId: "export-h",
+    runId: "run-h",
+    // Deliberately still a raw signed-looking Storage URL here, to prove the
+    // endpoint DISCARDS this and substitutes its own routes rather than
+    // passing it through — see the assertion below.
+    reportUrl: "https://mock.supabase.co/storage/v1/object/sign/merchant-exports/mock-store.test/run-h/report.html?token=abc",
+    bundleUrl: "https://mock.supabase.co/storage/v1/object/sign/merchant-exports/mock-store.test/run-h/bundle.zip?token=abc",
+    domain: "mock-store.test",
+    status: "complete",
+    artifactCount: 2,
+  }),
 };
 
 {
@@ -369,7 +405,13 @@ const happyDeps: PipelineDeps = {
   await handler(fakeReq("POST", { url: "https://mock-store.test", platform: "woocommerce" }), res);
   check("endpoint: valid POST returns 200", getStatus() === 200, getStatus());
   const body = getBody();
-  check("endpoint: response carries the expected fields", body?.runId === "run-h" && body?.overallScore === 88 && body?.reportUrl === "https://example.com/report", body);
+  check("endpoint: response carries the expected fields", body?.runId === "run-h" && body?.overallScore === 88, body);
+  check(
+    "endpoint: reportUrl/bundleUrl are OUR routes, not the raw signed Storage URL runExport returned",
+    body?.reportUrl === "/api/report/run-h" && body?.bundleUrl === "/api/bundle/run-h",
+    body,
+  );
+  check("endpoint: never leaks a raw Storage URL into the response", JSON.stringify(body).includes("supabase.co") === false, body);
 }
 
 {
@@ -426,6 +468,255 @@ const happyDeps: PipelineDeps = {
   const body = getBody();
   check("endpoint: NoArtifactsError from export still returns 200 (good news, not a failure)", getStatus() === 200, { status: getStatus(), body });
   check("endpoint: reportUrl/bundleUrl are null and a note is present", body?.reportUrl === null && body?.bundleUrl === null && typeof body?.note === "string", body);
+}
+
+// ---------------------------------------------------------------------------
+// 5. getReportHtml / getBundleBytes
+// ---------------------------------------------------------------------------
+
+{
+  const calls: MockCall[] = [];
+  const fetcher = makeMockFetch([{ match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET", respond: () => jsonResponse([]) }], calls);
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  let threw: unknown = null;
+  try {
+    await getReportHtml({ runId: "missing-run", config: cfg });
+  } catch (e) {
+    threw = e;
+  }
+  check("getReportHtml: throws RunNotFoundError when the run doesn't exist", threw instanceof RunNotFoundError, threw);
+}
+
+{
+  const calls: MockCall[] = [];
+  const fetcher = makeMockFetch(
+    [
+      { match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET", respond: () => jsonResponse([{ sites: { domain: "mock-store.test" } }]) },
+      { match: (u, m) => u.includes("/storage/v1/object/") && m === "GET", respond: () => new Response("not found", { status: 404 }) },
+    ],
+    calls,
+  );
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  let threw: unknown = null;
+  try {
+    await getReportHtml({ runId: "never-exported", config: cfg });
+  } catch (e) {
+    threw = e;
+  }
+  check("getReportHtml: throws ReportNotFoundError when the run exists but was never exported", threw instanceof ReportNotFoundError, threw);
+}
+
+{
+  const calls: MockCall[] = [];
+  const html = "<html><body>Report with an em dash — right here</body></html>";
+  const fetcher = makeMockFetch(
+    [
+      { match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET", respond: () => jsonResponse([{ sites: { domain: "mock-store.test" } }]) },
+      { match: (u, m) => u.includes("/storage/v1/object/") && m === "GET", respond: () => new Response(html, { status: 200 }) },
+    ],
+    calls,
+  );
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  const result = await getReportHtml({ runId: "run-ok", config: cfg });
+  check("getReportHtml: returns the object's text content exactly", result === html, result);
+  check(
+    "getReportHtml: fetches from the expected domain/runId path",
+    calls.some((c) => c.method === "GET" && c.url.includes("mock-store.test/run-ok/report.html")),
+    calls.map((c) => `${c.method} ${c.url}`),
+  );
+}
+
+{
+  const calls: MockCall[] = [];
+  const fetcher = makeMockFetch([{ match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET", respond: () => jsonResponse([]) }], calls);
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  let threw: unknown = null;
+  try {
+    await getBundleBytes({ runId: "missing-run", config: cfg });
+  } catch (e) {
+    threw = e;
+  }
+  check("getBundleBytes: throws RunNotFoundError when the run doesn't exist", threw instanceof RunNotFoundError, threw);
+}
+
+{
+  const calls: MockCall[] = [];
+  const fetcher = makeMockFetch(
+    [
+      { match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET", respond: () => jsonResponse([{ sites: { domain: "mock-store.test" } }]) },
+      { match: (u, m) => u.includes("/storage/v1/object/") && m === "GET", respond: () => new Response("not found", { status: 404 }) },
+    ],
+    calls,
+  );
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  let threw: unknown = null;
+  try {
+    await getBundleBytes({ runId: "never-exported", config: cfg });
+  } catch (e) {
+    threw = e;
+  }
+  check("getBundleBytes: throws BundleNotFoundError when the run exists but was never exported", threw instanceof BundleNotFoundError, threw);
+}
+
+{
+  const calls: MockCall[] = [];
+  const zipBytes = "PK-fake-zip-bytes";
+  const fetcher = makeMockFetch(
+    [
+      { match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET", respond: () => jsonResponse([{ sites: { domain: "mock-store.test" } }]) },
+      { match: (u, m) => u.includes("/storage/v1/object/") && m === "GET", respond: () => new Response(zipBytes, { status: 200 }) },
+    ],
+    calls,
+  );
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key", fetcher };
+
+  const result = await getBundleBytes({ runId: "run-ok", config: cfg });
+  check("getBundleBytes: returns the object's bytes", result.bytes.toString("utf8") === zipBytes, result.bytes.toString("utf8"));
+  check("getBundleBytes: returns a sensible filename", typeof result.filename === "string" && result.filename.endsWith(".zip"), result.filename);
+  check(
+    "getBundleBytes: fetches from the expected domain/runId path",
+    calls.some((c) => c.method === "GET" && c.url.includes("mock-store.test/run-ok/bundle.zip")),
+    calls.map((c) => `${c.method} ${c.url}`),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6. isEntitled (stub)
+// ---------------------------------------------------------------------------
+
+{
+  const cfg: SupabaseConfig = { url: "https://mock.supabase.co", serviceRoleKey: "mock-key" };
+  const result = await isEntitled({ runId: "any-run", config: cfg });
+  check("isEntitled: stub always returns true (no billing yet)", result === true, result);
+}
+
+// ---------------------------------------------------------------------------
+// 7. Report route handler
+// ---------------------------------------------------------------------------
+
+function fakeGetReq(path: string): IncomingMessage {
+  const req: any = { method: "GET", url: path, async *[Symbol.asyncIterator]() {} };
+  return req as IncomingMessage;
+}
+
+{
+  const deps: ReportDeps = { getReportHtml: async () => "<html><body>hi — there</body></html>" };
+  const handler = createReportHandler(deps);
+  const { res, getStatus } = fakeRes();
+  await handler(fakeGetReq("/api/report/run-1"), res);
+  check("report route: valid GET returns 200", getStatus() === 200, getStatus());
+}
+
+{
+  const capturedHeaders: Record<string, string> = {};
+  const deps: ReportDeps = { getReportHtml: async () => "<html></html>" };
+  const handler = createReportHandler(deps);
+  const { res } = fakeRes();
+  (res as any).setHeader = (k: string, v: string) => {
+    capturedHeaders[k.toLowerCase()] = v;
+  };
+  await handler(fakeGetReq("/api/report/run-1"), res);
+  check("report route: serves with text/html; charset=utf-8", capturedHeaders["content-type"] === "text/html; charset=utf-8", capturedHeaders);
+  check("report route: content-disposition is inline (renders, not downloads)", capturedHeaders["content-disposition"] === "inline", capturedHeaders);
+}
+
+{
+  const deps: ReportDeps = {
+    getReportHtml: async () => {
+      throw new RunNotFoundError("missing-run");
+    },
+  };
+  const handler = createReportHandler(deps);
+  const { res, getStatus } = fakeRes();
+  await handler(fakeGetReq("/api/report/missing-run"), res);
+  check("report route: RunNotFoundError -> 404", getStatus() === 404, getStatus());
+}
+
+{
+  const deps: ReportDeps = {
+    getReportHtml: async () => {
+      throw new ReportNotFoundError("never-exported");
+    },
+  };
+  const handler = createReportHandler(deps);
+  const { res, getStatus } = fakeRes();
+  await handler(fakeGetReq("/api/report/never-exported"), res);
+  check("report route: ReportNotFoundError -> 404", getStatus() === 404, getStatus());
+}
+
+{
+  const deps: ReportDeps = { getReportHtml: async () => "<html></html>" };
+  const handler = createReportHandler(deps);
+  const { res, getStatus } = fakeRes();
+  await handler(fakeReq("POST"), res);
+  check("report route: non-GET -> 405", getStatus() === 405, getStatus());
+}
+
+// ---------------------------------------------------------------------------
+// 8. Bundle route handler
+// ---------------------------------------------------------------------------
+
+{
+  let bundleFetchCalled = false;
+  const deps: BundleDeps = {
+    isEntitled: async () => false,
+    getBundleBytes: async () => {
+      bundleFetchCalled = true;
+      return { bytes: Buffer.from("zip"), filename: "x.zip" };
+    },
+  };
+  const handler = createBundleHandler(deps);
+  const { res, getStatus, getBody } = fakeRes();
+  await handler(fakeGetReq("/api/bundle/run-1"), res);
+  check("bundle route: not entitled -> 402", getStatus() === 402, { status: getStatus(), body: getBody() });
+  check("bundle route: not entitled -> bytes never fetched", bundleFetchCalled === false, bundleFetchCalled);
+}
+
+{
+  const capturedHeaders: Record<string, string> = {};
+  const deps: BundleDeps = {
+    isEntitled: async () => true,
+    getBundleBytes: async () => ({ bytes: Buffer.from("real-zip-bytes"), filename: "adeptra-merchant-fix-bundle.zip" }),
+  };
+  const handler = createBundleHandler(deps);
+  const { res, getStatus } = fakeRes();
+  (res as any).setHeader = (k: string, v: string) => {
+    capturedHeaders[k.toLowerCase()] = v;
+  };
+  await handler(fakeGetReq("/api/bundle/run-1"), res);
+  check("bundle route: entitled -> 200", getStatus() === 200, getStatus());
+  check("bundle route: content-type is application/zip", capturedHeaders["content-type"] === "application/zip", capturedHeaders);
+  check(
+    "bundle route: content-disposition is attachment with a filename (downloads, doesn't render)",
+    !!capturedHeaders["content-disposition"]?.includes("attachment") && !!capturedHeaders["content-disposition"]?.includes("adeptra-merchant-fix-bundle.zip"),
+    capturedHeaders,
+  );
+}
+
+{
+  const deps: BundleDeps = {
+    isEntitled: async () => true,
+    getBundleBytes: async () => {
+      throw new BundleNotFoundError("never-exported");
+    },
+  };
+  const handler = createBundleHandler(deps);
+  const { res, getStatus } = fakeRes();
+  await handler(fakeGetReq("/api/bundle/never-exported"), res);
+  check("bundle route: BundleNotFoundError -> 404", getStatus() === 404, getStatus());
+}
+
+{
+  const deps: BundleDeps = { isEntitled: async () => true, getBundleBytes: async () => ({ bytes: Buffer.from(""), filename: "x.zip" }) };
+  const handler = createBundleHandler(deps);
+  const { res, getStatus } = fakeRes();
+  await handler(fakeReq("POST"), res);
+  check("bundle route: non-GET -> 405", getStatus() === 405, getStatus());
 }
 
 console.log(failures === 0 ? "\nAll pipeline tests passed." : `\n${failures} FAILURE(S)`);

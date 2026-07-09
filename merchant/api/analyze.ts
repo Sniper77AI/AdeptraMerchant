@@ -17,6 +17,16 @@
  * good news, not a request failure, so NoArtifactsError from runExport still
  * yields a 200 with reportUrl/bundleUrl: null and a note, not an error.
  *
+ * reportUrl/bundleUrl in the response are OUR OWN proxy routes
+ * (/api/report/<runId>, /api/bundle/<runId>) — never the raw signed Storage
+ * URLs runExport returns. Those routes are the front door: report.html
+ * doesn't actually render when served directly from Storage (a platform
+ * content-type restriction, not fixable via upload headers — see
+ * report/[runId].ts's header comment), and the bundle route is where
+ * entitlement gets checked once billing exists. runExport is still passed
+ * bundleLinkForReport so the report page's OWN embedded download button also
+ * points at our route, not a signed URL baked into the HTML.
+ *
  * createHandler(deps) exists for testability: tests inject fake pipeline
  * functions without needing a module-mocking framework (this project has
  * none) — the default export used by serve.ts / Vercel is createHandler()
@@ -129,9 +139,11 @@ export function createHandler(deps: PipelineDeps = defaultDeps) {
       let bundleUrl: string | null = null;
       let note: string | undefined;
       try {
-        const exported = await deps.runExport({ runId: analysis.runId, config: cfg });
-        reportUrl = exported.reportUrl;
-        bundleUrl = exported.bundleUrl;
+        await deps.runExport({ runId: analysis.runId, config: cfg, bundleLinkForReport: `/api/bundle/${analysis.runId}` });
+        // Our own routes, not the signed Storage URLs runExport returns —
+        // see this file's header comment.
+        reportUrl = `/api/report/${analysis.runId}`;
+        bundleUrl = `/api/bundle/${analysis.runId}`;
       } catch (e) {
         if (e instanceof NoArtifactsError) {
           note = "Analysis complete — no fixes needed, nothing to export.";
