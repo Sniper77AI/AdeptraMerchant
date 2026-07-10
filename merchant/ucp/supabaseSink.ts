@@ -95,14 +95,13 @@ export async function createRun(cfg: SupabaseConfig, siteId: string): Promise<Ru
   return { runId: rows[0].id, siteId };
 }
 
-export async function completeRun(
-  cfg: SupabaseConfig,
-  runId: string,
-  overallScore: number | null,
-): Promise<void> {
+/** No composite score is written here (analysis_runs.overall_score is
+ *  deprecated — see its own COMMENT ON COLUMN and the README). Per-pillar
+ *  scores live in pillar_scores, already inserted before this call; this
+ *  just flips the run to complete. */
+export async function completeRun(cfg: SupabaseConfig, runId: string): Promise<void> {
   await rest(cfg, "PATCH", `/rest/v1/analysis_runs?id=eq.${runId}`, {
     status: "complete",
-    overall_score: overallScore,
     completed_at: new Date().toISOString(),
   });
 }
@@ -116,8 +115,9 @@ export async function failRun(cfg: SupabaseConfig, runId: string, errorDetail: s
 }
 
 /** No reachable manifest at all (unreachable or 404) — distinct from a manifest
- *  that's present but scores 0%. overall_score is left NULL: there's nothing to
- *  score, not a score of zero. See manifestChecks.ts `isManifestMissing`. */
+ *  that's present but scores 0%. `status` alone carries that distinction now
+ *  (overall_score is deprecated and never written by either path — see
+ *  completeRun). See manifestChecks.ts `isManifestMissing`. */
 export async function markNoManifest(cfg: SupabaseConfig, runId: string): Promise<void> {
   await rest(cfg, "PATCH", `/rest/v1/analysis_runs?id=eq.${runId}`, {
     status: "no_manifest",
@@ -237,11 +237,10 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
       id: string;
       site_id: string;
       status: string;
-      overall_score: number | null;
       created_at: string;
       sites: { domain: string | null } | null;
     }>
-  >(cfg, "GET", `/rest/v1/analysis_runs?id=eq.${runId}&select=id,site_id,status,overall_score,created_at,sites(domain)&limit=1`);
+  >(cfg, "GET", `/rest/v1/analysis_runs?id=eq.${runId}&select=id,site_id,status,created_at,sites(domain)&limit=1`);
   const run = runRows[0];
   if (!run) return null;
 
@@ -283,7 +282,6 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
     siteId: run.site_id,
     domain: run.sites?.domain ?? "unknown-domain",
     status: run.status,
-    overallScore: run.overall_score,
     createdAt: run.created_at,
     pillars: pillarRows,
     signals: signalRows.map((s) => ({

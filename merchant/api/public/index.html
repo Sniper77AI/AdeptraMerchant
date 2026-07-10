@@ -33,6 +33,12 @@
   @media (prefers-color-scheme: dark) { #status.success { background: #16241a; color: #b7e4bd; } }
   #status.error { background: #fdecea; color: #7a1f1f; }
   @media (prefers-color-scheme: dark) { #status.error { background: #2a1616; color: #f3b4b4; } }
+  .pillar-scores { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.25rem; }
+  .pillar-score-card { flex: 1 1 180px; background: rgba(0,0,0,0.04); border-radius: 8px; padding: 0.75rem 0.9rem; }
+  @media (prefers-color-scheme: dark) { .pillar-score-card { background: rgba(255,255,255,0.06); } }
+  .pillar-score-name { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.15rem; }
+  .pillar-score-status { font-size: 0.85rem; }
+  .pillar-score-claim { font-size: 0.78rem; opacity: 0.75; margin-top: 0.35rem; }
   .score { font-size: 2.25rem; font-weight: 700; }
   .score-pct { font-size: 1.25rem; font-weight: 500; }
   .links { margin-top: 0.75rem; }
@@ -83,6 +89,35 @@
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
+    // Two pillars, non-commensurable, never averaged into one score — see
+    // reportBuilder.ts / scorer.ts for the full reasoning. Duplicated here
+    // (not imported) since this is a standalone static page with no bundler.
+    const PILLAR_NAMES = { agent_readability: "Agent Readability", ucp: "UCP Protocol Compliance" };
+    const PILLAR_CLAIMS = {
+      agent_readability: "Can AI systems reach, read, and correctly understand your store?",
+      ucp: "Can an AI shopping agent actually transact with your store?",
+    };
+    const PILLAR_ORDER = ["agent_readability", "ucp"];
+
+    function renderPillars(pillars, status) {
+      if (!Array.isArray(pillars) || pillars.length === 0) return "";
+      const keys = pillars.map((p) => p.pillar);
+      const ordered = PILLAR_ORDER.filter((k) => keys.includes(k)).concat(keys.filter((k) => !PILLAR_ORDER.includes(k)));
+      const cards = ordered
+        .map((key) => {
+          const row = pillars.find((p) => p.pillar === key);
+          const name = PILLAR_NAMES[key] || key;
+          const claim = PILLAR_CLAIMS[key] || "";
+          const scoreHtml =
+            key === "ucp" && status === "no_manifest"
+              ? `<div class="pillar-score-status">This store hasn't started UCP yet — no manifest published.</div>`
+              : `<div class="score">${row.score}<span class="score-pct">%</span></div>`;
+          return `<div class="pillar-score-card"><div class="pillar-score-name">${escapeHtml(name)}</div>${scoreHtml}<div class="pillar-score-claim">${escapeHtml(claim)}</div></div>`;
+        })
+        .join("");
+      return `<div class="pillar-scores">${cards}</div>`;
+    }
+
     btn.addEventListener("click", async () => {
       const url = document.getElementById("url").value.trim();
       const platform = document.getElementById("platform").value;
@@ -116,11 +151,7 @@
         }
 
         let html = "";
-        if (data.status === "no_manifest") {
-          html += `<div><strong>No UCP manifest found yet</strong> — this store hasn't started UCP. See your fix files below to get started.</div>`;
-        } else if (typeof data.overallScore === "number") {
-          html += `<div class="score">${data.overallScore}<span class="score-pct">%</span></div><div>Overall UCP Readiness</div>`;
-        }
+        html += renderPillars(data.pillars, data.status);
 
         if (data.reportUrl || data.bundleUrl) {
           html += `<div class="links">`;

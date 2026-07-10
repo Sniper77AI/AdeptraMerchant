@@ -39,11 +39,17 @@
  * 8. Bundle route handler: not-entitled -> 402 (bytes never fetched);
  *    entitled -> 200 with application/zip + attachment disposition;
  *    BundleNotFoundError -> 404.
+ * 9. No-composite-score guarantee: the literal strings "overallScore" /
+ *    "overall_score" appear nowhere in pipeline.ts, reportBuilder.ts,
+ *    analyze.ts, index.html, or runLive.ts — enforced structurally (source
+ *    text scan), not just asserted in prose. analysis_runs.overall_score is
+ *    deprecated (see its own migration); nothing may read or write it.
  *
  * Run: node --experimental-strip-types test_pipeline.ts
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
 import {
   ensureSiteFromIntake,
   runAnalysis,
@@ -283,7 +289,10 @@ function analysisHandlers(signalsStatus = 200): MockHandler[] {
 
   check("runAnalysis: returns the created runId", result.runId === "run-1", result);
   check("runAnalysis: status is no_manifest (manifest 404s via the mock catch-all)", result.status === "no_manifest", result);
-  check("runAnalysis: overallScore is null for a no_manifest run", result.overallScore === null, result);
+  // agent_readability doesn't depend on a manifest — a no_manifest run still
+  // scores both pillars, it just never gets a composite (there isn't one).
+  check("runAnalysis: pillars is a non-empty array for a no_manifest run", Array.isArray(result.pillars) && result.pillars.length > 0, result);
+  check("runAnalysis: agent_readability pillar present even with no manifest", result.pillars.some((p) => p.pillar === "agent_readability"), result.pillars);
   check("runAnalysis: pillarCount/signalCount are numbers", typeof result.pillarCount === "number" && typeof result.signalCount === "number", result);
   check("runAnalysis: artifactTypes is an array", Array.isArray(result.artifactTypes), result);
   check("runAnalysis: marks the run no_manifest (PATCH sent)", has(calls, "/rest/v1/analysis_runs?id=eq.run-1", "PATCH"), calls.map((c) => `${c.method} ${c.url}`));
@@ -338,7 +347,7 @@ function analysisHandlers(signalsStatus = 200): MockHandler[] {
     [
       {
         match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET",
-        respond: () => jsonResponse([{ id: "run-2", site_id: "site-1", status: "complete", overall_score: 90, created_at: "2026-07-08T00:00:00.000Z", sites: { domain: "mock-store.test" } }]),
+        respond: () => jsonResponse([{ id: "run-2", site_id: "site-1", status: "complete", created_at: "2026-07-08T00:00:00.000Z", sites: { domain: "mock-store.test" } }]),
       },
       { match: (u, m) => u.includes("/rest/v1/pillar_scores") && m === "GET", respond: () => jsonResponse([]) },
       { match: (u, m) => u.includes("/rest/v1/signal_evidence") && m === "GET", respond: () => jsonResponse([]) },
@@ -364,7 +373,7 @@ function analysisHandlers(signalsStatus = 200): MockHandler[] {
     [
       {
         match: (u, m) => u.includes("/rest/v1/analysis_runs") && m === "GET",
-        respond: () => jsonResponse([{ id: "run-3", site_id: "site-1", status: "complete", overall_score: 77.5, created_at: "2026-07-08T00:00:00.000Z", sites: { domain: "mock-store.test" } }]),
+        respond: () => jsonResponse([{ id: "run-3", site_id: "site-1", status: "complete", created_at: "2026-07-08T00:00:00.000Z", sites: { domain: "mock-store.test" } }]),
       },
       { match: (u, m) => u.includes("/rest/v1/pillar_scores") && m === "GET", respond: () => jsonResponse([{ pillar: "ucp", score: 77.5, signals_passed: 10, signals_total: 13 }]) },
       { match: (u, m) => u.includes("/rest/v1/signal_evidence") && m === "GET", respond: () => jsonResponse([]) },
@@ -438,8 +447,11 @@ const happyDeps: PipelineDeps = {
   runAnalysis: async () => ({
     runId: "run-h",
     status: "complete",
-    overallScore: 88,
-    pillarCount: 1,
+    pillars: [
+      { pillar: "agent_readability", score: 91, signals_passed: 9, signals_total: 10 },
+      { pillar: "ucp", score: 88, signals_passed: 13, signals_total: 20 },
+    ],
+    pillarCount: 2,
     signalCount: 20,
     artifactCount: 2,
     artifactTypes: ["ucp_manifest", "feed_fix"],
@@ -464,7 +476,12 @@ const happyDeps: PipelineDeps = {
   await handler(fakeReq("POST", { url: "https://mock-store.test", platform: "woocommerce" }), res);
   check("endpoint: valid POST returns 200", getStatus() === 200, getStatus());
   const body = getBody();
-  check("endpoint: response carries the expected fields", body?.runId === "run-h" && body?.overallScore === 88, body);
+  check(
+    "endpoint: response carries the expected fields",
+    body?.runId === "run-h" && Array.isArray(body?.pillars) && body.pillars.length === 2 && body.pillars[1]?.pillar === "ucp" && body.pillars[1]?.score === 88,
+    body,
+  );
+  check("endpoint: response never carries a composite overallScore field", !("overallScore" in (body ?? {})), body);
   check(
     "endpoint: reportUrl/bundleUrl are OUR routes, not the raw signed Storage URL runExport returned",
     body?.reportUrl === "/api/report/run-h" && body?.bundleUrl === "/api/bundle/run-h",
@@ -500,7 +517,7 @@ const happyDeps: PipelineDeps = {
     runAnalysis: async () => ({
       runId: "run-fail",
       status: "failed",
-      overallScore: null,
+      pillars: [],
       pillarCount: 0,
       signalCount: 0,
       artifactCount: 0,
@@ -776,6 +793,27 @@ function fakeGetReq(path: string): IncomingMessage {
   const { res, getStatus } = fakeRes();
   await handler(fakeReq("POST"), res);
   check("bundle route: non-GET -> 405", getStatus() === 405, getStatus());
+}
+
+// ---------------------------------------------------------------------------
+// 9. No-composite-score guarantee — structural, not just behavioral. Reads
+//    the actual shipped source of every file the composite score used to
+//    touch and asserts the identifiers are gone, not just untested.
+// ---------------------------------------------------------------------------
+
+{
+  const filesToCheck = [
+    new URL("./pipeline.ts", import.meta.url),
+    new URL("./export/reportBuilder.ts", import.meta.url),
+    new URL("../api/analyze.ts", import.meta.url),
+    new URL("../api/public/index.html", import.meta.url),
+    new URL("./runLive.ts", import.meta.url),
+  ];
+  for (const fileUrl of filesToCheck) {
+    const source = readFileSync(fileUrl, "utf8");
+    const hasOverallScore = source.includes("overallScore") || source.includes("overall_score");
+    check(`no-composite guarantee: ${fileUrl.pathname.split("/").pop()} contains no overallScore/overall_score reference`, !hasOverallScore, { file: fileUrl.pathname });
+  }
 }
 
 console.log(failures === 0 ? "\nAll pipeline tests passed." : `\n${failures} FAILURE(S)`);

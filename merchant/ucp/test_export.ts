@@ -37,13 +37,17 @@ const COMPLETE_DATA: RunBundleData = {
   siteId: "22222222-2222-2222-2222-222222222222",
   domain: "shop.example.com",
   status: "complete",
-  overallScore: 84.46,
   createdAt: "2026-07-06T12:00:00.000Z",
-  pillars: [{ pillar: "ucp", score: 84.46, signals_passed: 15, signals_total: 20 }],
+  pillars: [
+    { pillar: "ucp", score: 84.46, signals_passed: 15, signals_total: 20 },
+    { pillar: "agent_readability", score: 92.5, signals_passed: 9, signals_total: 10 },
+  ],
   signals: [
     { signal_key: "ucp_manifest_present", pillar: "ucp", category: "discovery_manifest", status: "pass", weight: 3, priority_score: 7.5, fix_summary: null, basis: null, merchant_note: null },
     { signal_key: "capability_cart_declared", pillar: "ucp", category: "capabilities", status: "fail", weight: 2, priority_score: 2.67, fix_summary: "Declare dev.ucp.shopping.cart in ucp.capabilities to support multi-item carts.", basis: null, merchant_note: null },
     { signal_key: "ucp_namespace_authority_valid", pillar: "ucp", category: "discovery_manifest", status: "partial", weight: 1, priority_score: 9.0, fix_summary: "Some spec/schema URLs are not on the canonical UCP authority.", basis: null, merchant_note: null },
+    { signal_key: "robots_txt_valid", pillar: "agent_readability", category: "crawler_access", status: "pass", weight: 1.5, priority_score: 4.5, fix_summary: null, basis: "specified", merchant_note: null },
+    { signal_key: "llms_txt_present", pillar: "agent_readability", category: "discovery_surfaces", status: "fail", weight: 0.5, priority_score: 2.0, fix_summary: "No llms.txt found.", basis: "contested", merchant_note: "llms.txt has no established effect on AI citation visibility." },
   ],
   artifacts: [
     {
@@ -82,20 +86,50 @@ const COMPLETE_DATA: RunBundleData = {
 // ---------------------------------------------------------------------------
 
 {
-  const noManifestData: RunBundleData = { ...COMPLETE_DATA, status: "no_manifest", overallScore: null };
+  // no_manifest: the ucp pillar shows the "hasn't started" framing instead
+  // of a number, but agent_readability is measurable regardless of manifest
+  // presence and must still show a real score — a genuine improvement over
+  // the old single-composite report, which showed nothing at all here.
+  const noManifestData: RunBundleData = { ...COMPLETE_DATA, status: "no_manifest" };
   const plan = buildBundlePlan(noManifestData);
   check("no_manifest: markdown shows the 'hasn't started UCP' framing", plan.report_markdown.includes("hasn't started UCP"), plan.report_markdown);
-  check("no_manifest: markdown never shows a bare 0%", !/\b0%/.test(plan.report_markdown), plan.report_markdown);
-  check("no_manifest: html shows the no-manifest banner", plan.report_html.includes("No manifest found"), plan.report_html);
-  check("no_manifest: html never shows a bare 0%", !/>0<span/.test(plan.report_html), plan.report_html);
+  check("no_manifest: html shows the no-manifest framing", plan.report_html.includes("hasn't started UCP"), plan.report_html);
+  check("no_manifest: markdown still shows a real agent_readability score", plan.report_markdown.includes("Agent Readability: 92.5%"), plan.report_markdown);
+  check("no_manifest: html still shows a real agent_readability score", /Agent Readability<\/div>\s*<div class="score">92\.5/.test(plan.report_html), plan.report_html);
+  check("no_manifest: ucp pillar shows no numeric score in the html hero", !/UCP Protocol Compliance<\/div>\s*<div class="score">/.test(plan.report_html), plan.report_html);
 }
 
 {
-  // Sanity: a genuine 0% on a COMPLETE run (not no_manifest) must still show 0 —
-  // the suppression is specific to the no_manifest status, not "score is falsy".
-  const zeroScoreData: RunBundleData = { ...COMPLETE_DATA, status: "complete", overallScore: 0 };
+  // Sanity: a genuine 0% pillar score on a COMPLETE run (not no_manifest)
+  // must still show 0 — the no_manifest suppression is specific to the ucp
+  // pillar's status, not "score is falsy".
+  const zeroScoreData: RunBundleData = {
+    ...COMPLETE_DATA,
+    status: "complete",
+    pillars: [
+      { pillar: "ucp", score: 0, signals_passed: 0, signals_total: 20 },
+      { pillar: "agent_readability", score: 92.5, signals_passed: 9, signals_total: 10 },
+    ],
+  };
   const plan = buildBundlePlan(zeroScoreData);
-  check("genuine 0% complete run: score IS shown (not suppressed)", plan.report_markdown.includes("Overall UCP Readiness Score: 0%"), plan.report_markdown);
+  check("genuine 0% pillar on a complete run: score IS shown (not suppressed)", plan.report_markdown.includes("UCP Protocol Compliance: 0%"), plan.report_markdown);
+}
+
+{
+  // No composite anywhere — the whole point of this build.
+  const plan = buildBundlePlan(COMPLETE_DATA);
+  // "never averaged" is good, honest copy (reassures the merchant there's no
+  // hidden composite) — the actual guarantee is no "overall"/combined score
+  // LABEL anywhere, which "average" alone doesn't capture.
+  check("no composite: markdown never says 'overall'", !/overall/i.test(plan.report_markdown), plan.report_markdown);
+  check("no composite: html never says 'overall'", !/overall/i.test(plan.report_html), plan.report_html);
+  check("no composite: title renamed to 'AI Commerce Readiness Report'", plan.report_markdown.startsWith("# AI Commerce Readiness Report") && plan.report_html.includes("<title>AI Commerce Readiness Report"), {
+    md: plan.report_markdown.slice(0, 40),
+  });
+  check("both exact claim sentences present in markdown", plan.report_markdown.includes("Can AI systems reach, read, and correctly understand your store?") && plan.report_markdown.includes("Can an AI shopping agent actually transact with your store?"), plan.report_markdown);
+  check("both exact claim sentences present in html", plan.report_html.includes("Can AI systems reach, read, and correctly understand your store?") && plan.report_html.includes("Can an AI shopping agent actually transact with your store?"), plan.report_html);
+  check("searchable/buyable framing stated plainly", plan.report_markdown.includes("searchable") && plan.report_markdown.includes("buyable"), plan.report_markdown);
+  check("agent_readability pillar appears before ucp (searchable is the precondition)", plan.report_markdown.indexOf("Agent Readability") < plan.report_markdown.indexOf("UCP Protocol Compliance"), plan.report_markdown);
 }
 
 // ---------------------------------------------------------------------------

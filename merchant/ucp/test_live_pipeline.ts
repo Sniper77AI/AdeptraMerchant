@@ -63,7 +63,7 @@ import {
   sig_ucp_early_access_status,
   type MerchantCenterAttestation,
 } from "./readinessChecks.ts";
-import { scorePillars, overallScore, priorityScore } from "./scorer.ts";
+import { scorePillars, priorityScore } from "./scorer.ts";
 import { httpFetcher } from "./httpFetcher.ts";
 
 let failures = 0;
@@ -119,7 +119,6 @@ const mock404: Fetcher = async () => ({
     pillars[0].signals_passed === pillars[0].signals_total,
     pillars[0],
   );
-  check("scorer: overall equals single pillar", overallScore(pillars) === pillars[0].score);
 }
 
 {

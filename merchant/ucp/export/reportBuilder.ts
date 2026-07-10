@@ -60,7 +60,6 @@ export interface RunBundleData {
   siteId: string; // not used by rendering — carried through for storageSink's exports-row insert
   domain: string;
   status: string; // 'complete' | 'no_manifest' | 'failed' | ...
-  overallScore: number | null;
   createdAt: string;
   pillars: PillarScoreRow[];
   signals: RunBundleSignal[];
@@ -93,9 +92,15 @@ const ARTIFACT_TYPE_DISPLAY_NAMES: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// pillar -> friendly section name + one-line description. aeo_geo isn't
+// pillar -> friendly section name + exact claim sentence. aeo_geo isn't
 // listed: it's an intentionally empty pillar (see README) and never appears
 // in real signal data, so it never needs a display name here.
+//
+// NO COMPOSITE: these two pillars measure non-commensurable things — whether
+// agents can reach/read/understand a store at all (searchable) vs. whether an
+// agent can actually transact with it (buyable). They are always shown side
+// by side, each labeled with its own claim, never averaged into one number.
+// See scorer.ts's header comment for why.
 // ---------------------------------------------------------------------------
 
 const PILLAR_DISPLAY_NAMES: Record<string, string> = {
@@ -104,9 +109,22 @@ const PILLAR_DISPLAY_NAMES: Record<string, string> = {
 };
 
 const PILLAR_DESCRIPTIONS: Record<string, string> = {
-  ucp: "Can an AI shopping agent complete a purchase through the Universal Commerce Protocol — manifest, capabilities, and feed/page data that all agree with each other.",
-  agent_readability: "Can a generic AI system access, parse, and correctly understand this store at all — independent of UCP, and independent of any claim about AI search visibility or citation lift.",
+  agent_readability: "Can AI systems reach, read, and correctly understand your store?",
+  ucp: "Can an AI shopping agent actually transact with your store?",
 };
+
+// agent_readability first: it's the precondition ("searchable") for
+// everything ucp ("buyable") measures. Any pillar not listed here (a future
+// aeo_geo, once it's ever populated) falls back to first-seen order.
+const PILLAR_DISPLAY_ORDER = ["agent_readability", "ucp"];
+
+function canonicalPillarOrder(pillarKeys: string[]): string[] {
+  const seen: string[] = [];
+  for (const p of pillarKeys) if (!seen.includes(p)) seen.push(p);
+  const known = PILLAR_DISPLAY_ORDER.filter((p) => seen.includes(p));
+  const rest = seen.filter((p) => !PILLAR_DISPLAY_ORDER.includes(p));
+  return [...known, ...rest];
+}
 
 export function pillarDisplayName(pillar: string): string {
   return PILLAR_DISPLAY_NAMES[pillar] ?? pillar;
@@ -162,22 +180,15 @@ interface ReportModel {
   domain: string;
   runId: string;
   createdAt: string;
-  hasManifest: boolean; // false => no_manifest — never show a punitive 0%
-  overallScore: number | null;
-  pillarCount: number; // a 1-pillar run and a 2-pillar run aren't comparable at face value
-  pillars: PillarScoreRow[];
+  hasManifest: boolean; // false => no_manifest — the ucp pillar shows "hasn't started" framing instead of its score; agent_readability is unaffected, it's measurable either way
+  pillars: PillarScoreRow[]; // canonical order (agent_readability, ucp), real numbers always — never suppressed
   sections: PillarSection[];
   artifacts: ReportArtifact[];
 }
 
-function pillarOrder(signals: RunBundleSignal[]): string[] {
-  const order: string[] = [];
-  for (const s of signals) if (!order.includes(s.pillar)) order.push(s.pillar);
-  return order;
-}
-
 function buildSections(data: RunBundleData): PillarSection[] {
-  return pillarOrder(data.signals).map((pillar) => {
+  const pillarKeys = canonicalPillarOrder(data.signals.map((s) => s.pillar));
+  return pillarKeys.map((pillar) => {
     const pillarSignals = data.signals.filter((s) => s.pillar === pillar);
     return {
       pillar,
@@ -205,14 +216,15 @@ function buildModel(data: RunBundleData): ReportModel {
     };
   });
 
+  const pillarKeyOrder = canonicalPillarOrder(data.pillars.map((p) => p.pillar));
+  const orderedPillars = pillarKeyOrder.map((k) => data.pillars.find((p) => p.pillar === k)!).filter(Boolean);
+
   return {
     domain: data.domain,
     runId: data.runId,
     createdAt: data.createdAt,
     hasManifest: data.status !== "no_manifest",
-    overallScore: data.overallScore,
-    pillarCount: data.pillars.length,
-    pillars: data.pillars,
+    pillars: orderedPillars,
     sections,
     artifacts,
   };
@@ -228,40 +240,32 @@ function escapeHtml(s: string): string {
 
 function renderMarkdown(model: ReportModel): string {
   const lines: string[] = [];
-  lines.push(`# UCP Readiness Report — ${model.domain}`);
+  lines.push(`# AI Commerce Readiness Report — ${model.domain}`);
   lines.push("");
   lines.push(`Run: \`${model.runId}\`  ·  Generated: ${model.createdAt}`);
   lines.push("");
-
-  if (!model.hasManifest) {
-    lines.push("## Status: No manifest found");
-    lines.push("");
-    lines.push(
-      "This store hasn't started UCP yet — there's no `/.well-known/ucp` manifest published. The fixes below include a complete starter manifest to get going.",
-    );
-  } else if (model.overallScore !== null) {
-    lines.push(`## Overall UCP Readiness Score: ${model.overallScore}%`);
-  } else {
-    lines.push("## Overall UCP Readiness Score: not yet available");
-  }
-  lines.push("");
   lines.push(
-    "AI shopping agents (ChatGPT, Gemini, Perplexity, Google AI Mode) can only recommend, compare, and check out through stores they can discover, parse, and trust. This report shows where this store stands today and exactly what to fix, in priority order.",
+    "AI shopping agents (ChatGPT, Gemini, Perplexity, Google AI Mode) can only help customers buy from a store they can find, understand, and transact with. Two independent things determine that: whether agents can reach, read, and understand your store at all (**searchable**), and whether an agent can actually complete a purchase through the Universal Commerce Protocol (**buyable**). This report measures both separately, below — never averaged into one score, because being searchable doesn't imply being buyable, and vice versa.",
   );
   lines.push("");
 
-  lines.push("## Scores by pillar");
+  lines.push("## Your scores");
   lines.push("");
   if (model.pillars.length === 0) {
     lines.push("No pillar scores recorded for this run.");
   } else {
-    if (model.pillarCount < 2) {
-      lines.push(`_This run scored ${model.pillarCount} pillar — scores here aren't directly comparable to a run that scored more._`);
+    for (const p of model.pillars) {
+      const displayName = pillarDisplayName(p.pillar);
+      const claim = PILLAR_DESCRIPTIONS[p.pillar] ?? "";
+      if (p.pillar === "ucp" && !model.hasManifest) {
+        lines.push(`**${displayName}** — ${claim}`);
+        lines.push("_This store hasn't started UCP yet — no \`/.well-known/ucp\` manifest published. The fixes below include a complete starter manifest to get going._");
+      } else {
+        lines.push(`**${displayName}: ${p.score}%** (${p.signals_passed}/${p.signals_total} checks passed) — ${claim}`);
+      }
       lines.push("");
     }
-    for (const p of model.pillars) lines.push(`- **${pillarDisplayName(p.pillar)}**: ${p.score}% (${p.signals_passed}/${p.signals_total} checks passed)`);
   }
-  lines.push("");
 
   for (const section of model.sections) {
     lines.push(`## ${section.displayName}`);
@@ -331,23 +335,30 @@ function renderMarkdown(model: ReportModel): string {
 // ---------------------------------------------------------------------------
 
 function renderHtml(model: ReportModel, downloadUrlToken: string | null): string {
-  const scoreBlock = !model.hasManifest
-    ? `<div class="status-banner status-no-manifest">No manifest found — this store hasn't started UCP</div>`
-    : model.overallScore !== null
-      ? `<div class="score">${model.overallScore}<span class="score-pct">%</span></div><div class="score-label">Overall UCP Readiness</div>`
-      : `<div class="status-banner">Score not yet available</div>`;
+  // Two pillar cards, always shown side by side with equal visual weight —
+  // never averaged into one headline number. agent_readability always shows
+  // its real score (it's measurable with or without a manifest); ucp shows
+  // the honest "hasn't started" framing instead of a number when there's no
+  // manifest, same substance as the old global no-manifest banner, now
+  // scoped to the pillar it actually describes.
+  const pillarScoreCards = model.pillars
+    .map((p) => {
+      const claim = escapeHtml(PILLAR_DESCRIPTIONS[p.pillar] ?? "");
+      const scoreBlock =
+        p.pillar === "ucp" && !model.hasManifest
+          ? `<div class="status-banner status-no-manifest">This store hasn't started UCP</div>`
+          : `<div class="score">${p.score}<span class="score-pct">%</span></div><div class="score-label">${p.signals_passed}/${p.signals_total} checks passed</div>`;
+      return `<div class="pillar-score-card">
+        <div class="pillar-score-name">${escapeHtml(pillarDisplayName(p.pillar))}</div>
+        ${scoreBlock}
+        <div class="pillar-score-claim">${claim}</div>
+      </div>`;
+    })
+    .join("\n");
 
   const downloadSection = downloadUrlToken
     ? `<a class="download-btn" href="${escapeHtml(downloadUrlToken)}">⬇ Download the fix bundle (ZIP)</a>`
     : `<div class="offline-note">This is the offline copy included in your downloaded bundle — no separate download needed.</div>`;
-
-  const pillarRows = model.pillars
-    .map((p) => `<tr><td>${escapeHtml(pillarDisplayName(p.pillar))}</td><td>${p.score}%</td><td>${p.signals_passed}/${p.signals_total}</td></tr>`)
-    .join("\n");
-  const pillarCountNote =
-    model.pillarCount < 2
-      ? `<p class="muted">This run scored ${model.pillarCount} pillar — scores here aren't directly comparable to a run that scored more.</p>`
-      : "";
 
   const sectionBlocks = model.sections
     .map((section) => {
@@ -403,7 +414,7 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>UCP Readiness Report — ${escapeHtml(model.domain)}</title>
+<title>AI Commerce Readiness Report — ${escapeHtml(model.domain)}</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 2rem 1.25rem 4rem; line-height: 1.5; color: #1a1a1a; background: #fff; }
@@ -413,11 +424,16 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
   @media (prefers-color-scheme: dark) { h2 { border-bottom-color: #333; } }
   .meta { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
   .meta code { font-size: 0.85em; }
-  .hero { display: flex; align-items: baseline; gap: 1rem; background: #f6f7f9; border-radius: 10px; padding: 1.25rem 1.5rem; margin: 1.25rem 0; }
-  @media (prefers-color-scheme: dark) { .hero { background: #1c1f22; } }
+  .pillar-scores { display: flex; gap: 1.25rem; flex-wrap: wrap; margin: 1.25rem 0; }
+  .pillar-score-card { flex: 1 1 240px; background: #f6f7f9; border-radius: 10px; padding: 1.25rem 1.5rem; }
+  @media (prefers-color-scheme: dark) { .pillar-score-card { background: #1c1f22; } }
+  .pillar-score-name { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; }
+  .pillar-score-claim { color: #666; font-size: 0.88rem; margin-top: 0.5rem; }
+  @media (prefers-color-scheme: dark) { .pillar-score-claim { color: #999; } }
   .score { font-size: 2.75rem; font-weight: 700; }
   .score-pct { font-size: 1.5rem; font-weight: 500; }
   .score-label { color: #666; }
+  @media (prefers-color-scheme: dark) { .score-label { color: #999; } }
   .status-banner { font-weight: 600; padding: 0.75rem 1rem; border-radius: 8px; background: #fff4e5; color: #7a4b00; }
   .status-no-manifest { background: #fdecea; color: #7a1f1f; }
   .download-btn { display: inline-block; margin: 1rem 0 1.5rem; padding: 0.7rem 1.25rem; background: #1a56db; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; }
@@ -450,20 +466,13 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
 </style>
 </head>
 <body>
-  <h1>UCP Readiness Report</h1>
+  <h1>AI Commerce Readiness Report</h1>
   <div class="meta">${escapeHtml(model.domain)} · run <code>${escapeHtml(model.runId)}</code> · generated ${escapeHtml(model.createdAt)}</div>
 
-  <div class="hero">${scoreBlock}</div>
+  <p>AI shopping agents (ChatGPT, Gemini, Perplexity, Google AI Mode) can only help customers buy from a store they can find, understand, and transact with. Two independent things determine that: whether agents can reach, read, and understand your store at all (<strong>searchable</strong>), and whether an agent can actually complete a purchase through the Universal Commerce Protocol (<strong>buyable</strong>). This report measures both separately, below — never averaged into one score, because being searchable doesn't imply being buyable, and vice versa.</p>
+
+  <div class="pillar-scores">${pillarScoreCards || '<p class="muted">No pillar scores recorded.</p>'}</div>
   ${downloadSection}
-
-  <p>AI shopping agents (ChatGPT, Gemini, Perplexity, Google AI Mode) can only recommend, compare, and check out through stores they can discover, parse, and trust. This report shows where this store stands today and exactly what to fix, in priority order.</p>
-
-  <h2>Scores by pillar</h2>
-  ${pillarCountNote}
-  <table>
-    <thead><tr><th>Pillar</th><th>Score</th><th>Checks passed</th></tr></thead>
-    <tbody>${pillarRows || '<tr><td colspan="3" class="muted">No pillar scores recorded.</td></tr>'}</tbody>
-  </table>
 
   ${sectionBlocks}
 
@@ -481,14 +490,16 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
 
 function buildReadme(model: ReportModel): string {
   const lines: string[] = [];
-  lines.push("ADEPTRA MERCHANT — UCP READINESS FIX BUNDLE");
+  lines.push("ADEPTRA MERCHANT — AI COMMERCE READINESS FIX BUNDLE");
   lines.push(`Store: ${model.domain}`);
   lines.push(`Run: ${model.runId}`);
   lines.push(`Generated: ${model.createdAt}`);
   lines.push("");
   lines.push("WHAT THIS IS");
-  lines.push("This bundle contains the results of an AI-agent-readiness (UCP) analysis of");
-  lines.push("your store, plus the fix files our system generated for you.");
+  lines.push("This bundle contains the results of an AI commerce readiness analysis of your");
+  lines.push("store — whether AI agents can find and understand it (searchable), and whether");
+  lines.push("they can transact with it via UCP (buyable) — plus the fix files our system");
+  lines.push("generated for you.");
   lines.push("");
   lines.push("FILES IN THIS BUNDLE");
   lines.push("- report.md / report.html  the full readiness report (open report.html in any browser)");

@@ -2,7 +2,26 @@
  * Adeptra Merchant — Scorer (pure).
  *
  * Rolls a run's SignalRow[] into per-pillar summaries matching the
- * `pillar_scores` table, plus an overall run score for `analysis_runs.overall_score`.
+ * `pillar_scores` table. That's it — there is deliberately no composite
+ * "overall score" anymore.
+ *
+ * WHY NO COMPOSITE (removed 2026-07-10, see README): this scorer computes
+ * one number per pillar (`ucp`, `agent_readability`) and stops there. An
+ * earlier version averaged pillar scores into a single number. Live data
+ * proved that number actively misleads: two skims.com runs a day apart went
+ * from {ucp: 86.36} -> {ucp: 81.41, agent_readability: 97.14}. UCP
+ * compliance REGRESSED (86.36 -> 81.41) while the averaged composite ROSE
+ * (86.36 -> 89.28), purely because a second, unrelated pillar got averaged
+ * in. A merchant tracking the headline number would see improvement where
+ * there was regression. There is no principled basis for weighting UCP
+ * against agent_readability — they measure non-commensurable things
+ * ("can an agent transact with you" vs. "can an agent read you at all") —
+ * and inventing a weighting would violate the same "no credible basis, no
+ * claim" discipline that keeps the aeo_geo pillar empty. `pillar_scores` is
+ * the source of truth; report both pillars explicitly, never averaged, never
+ * presented as substitutes for each other. If a single headline number is
+ * ever needed, it must be categorical and derived from signal gates (e.g.
+ * "discoverable, not yet buyable"), never an arithmetic mean of these rows.
  *
  * Rules (from the signal spec):
  *  - Score = earned / achievable * 100, where achievable EXCLUDES not_applicable
@@ -58,12 +77,4 @@ export function scorePillars(signals: SignalRow[]): PillarScoreRow[] {
     });
   }
   return rows;
-}
-
-/** Overall run score: mean of pillar scores present. With only the UCP pillar
- *  live at MVP this equals the UCP score; once aeo_geo / agent_readability land,
- *  swap in per-pillar weights here (one place, derived data only). */
-export function overallScore(pillars: PillarScoreRow[]): number | null {
-  if (pillars.length === 0) return null;
-  return round2(pillars.reduce((s, p) => s + p.score, 0) / pillars.length);
 }

@@ -923,8 +923,74 @@ live-verified against two real stores (skims.com, gymshark.com). A second, indep
       but isn't a full dashboard)
 - [ ] Billing/entitlement: `isEntitled()` is a stub (always `true`) — see the recommendation above for
       where the real check should live (`subscriptions` table, no new schema needed)
+- [x] **Removed the composite `overall_score`; report both pillars explicitly (2026-07-10).**
+      `scorer.ts`'s `overallScore()` (mean of pillar scores) is deleted, not replaced — there is no
+      composite anymore, by design. Live data proved the old number actively misleading: two runs of
+      skims.com's real site a day apart went `{ucp: 86.36}` → `{ucp: 81.41, agent_readability: 97.14}`.
+      UCP compliance genuinely fell (86.36% → 81.41%) while the averaged composite *rose* (86.36% →
+      89.28%), purely because a second, unrelated pillar got averaged in. Diffing every signal between
+      the two runs (before touching any code, per the "an unexplained score movement is a bug until
+      proven otherwise" discipline) ruled out the obvious suspect — `capability_checkout_declared` was
+      identical (`pass`) in both — and found the real cause: the two runs were against *different*
+      `sites` rows that happen to share the domain "skims.com" (see the Open Items entry below). There
+      is no principled basis for weighting `ucp` against `agent_readability` — they measure
+      non-commensurable things ("can an agent transact with you" vs. "can an agent read you at all") —
+      and inventing a weighting would violate the same "no credible basis, no claim" discipline that
+      keeps `aeo_geo` empty. `pillar_scores` was already the source of truth; this build just stops
+      hiding it behind an average.
+      `AnalyzeResult`/the intake endpoint's JSON response/the form now carry `pillars: PillarScoreRow[]`
+      instead of `overallScore`. The report (`reportBuilder.ts`) is retitled **"AI Commerce Readiness
+      Report"** (was "UCP Readiness Report" — as stale a name as the composite it displayed) and shows
+      two pillar score cards side by side, always in the same order (`agent_readability` first, as the
+      "searchable" precondition to `ucp`'s "buyable" claim), each labeled with its exact claim sentence
+      ("Can AI systems reach, read, and correctly understand your store?" / "Can an AI shopping agent
+      actually transact with your store?") and explicitly tied to the searchable/buyable service tiers.
+      The old global "no manifest" banner is now scoped to just the `ucp` card — `agent_readability`
+      shows its real score regardless of manifest presence, since it's independently measurable; a
+      no-manifest store now gets a genuine, actionable readability score instead of nothing.
+      `analysis_runs.overall_score` is deprecated via a **comment-only migration**
+      (`20260712000000_deprecate_overall_score.sql`, no `ALTER`, no backfill, no recompute — the 28
+      historical values stay exactly as they were, correct for the world that produced them) — nothing
+      writes to it anymore (confirmed by grepping the whole repo: only `completeRun` wrote it and only
+      `fetchRunBundleData` read it; both are changed), so it stays at its column default (`NULL`, no
+      `DEFAULT` clause) for every run going forward, complete or not. `status` remains the only
+      authoritative outcome signal. A dedicated structural test
+      (`test_pipeline.ts`, "no-composite guarantee") reads the actual shipped source of `pipeline.ts`,
+      `reportBuilder.ts`, `analyze.ts`, `index.html`, and `runLive.ts` and asserts the literal strings
+      `overallScore`/`overall_score` appear in none of them — enforced, not just asserted in prose.
+      Both UCP and agent_readability golden-fixture signal outputs are unchanged (this build touches
+      presentation and one derived value only, never signal computation). Live-verified against the
+      real skims.com site (`52d663c9…`, no feed configured): the report/form/CLI all show two labeled
+      pillar scores with no composite anywhere, seven Category-2 signals correctly `not_applicable`
+      (no feed to check against), and `analysis_runs.overall_score` stayed `NULL` on the new row.
 
 ### Open items / known shortcuts
+
+- **A single domain can have multiple `sites` rows across clients — `domain` is
+  NOT a stable identity for cross-run history (found 2026-07-10, while
+  investigating an apparent UCP score regression on skims.com).** The
+  `(client_id, root_url)` UNIQUE constraint permits this by design — nothing
+  stops two different onboarding submissions for the same domain from
+  creating two separate site rows with different configs. Concretely:
+  `52d663c9…` (`is_test=false`, no feed configured, the real merchant site,
+  1 run) and `140ee584…` (`is_test=true`, `feed_url` set, used for
+  live-verifying the `agent_readability` build, 21 runs) are both
+  "skims.com." A run against one isn't comparable to a run against the
+  other — they scored 86.36% and 81.41% UCP respectively, purely because one
+  has Category 2 (product feed) signals to score and the other doesn't, not
+  because of any real compliance change. **Any future dashboard showing
+  "score over time for a domain" must key on `site_id`, never `domain`, or it
+  will silently merge different store configurations into one misleading
+  trend line.** No code fix included in this build — flagging it as the real
+  finding behind the composite-score removal above, not something this pass
+  resolved.
+
+- **If a single headline number is ever wanted again, it must be categorical,
+  derived from signal gates — never an arithmetic mean of pillar scores.**
+  E.g. "discoverable, not yet buyable" (agent_readability healthy, ucp not),
+  computed from whether each pillar clears some threshold, not from averaging
+  their percentages together. See the composite-score-removal Status entry
+  above for why an averaged number doesn't have a defensible referent.
 
 - ~~"No manifest" vs. "scored 0%" are currently indistinguishable.~~ **Fixed
   2026-07-06.** `analysis_runs.status` gained a distinct `no_manifest` value

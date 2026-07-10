@@ -155,7 +155,10 @@ export function createHandler(deps: PipelineDeps = defaultDeps) {
       sendJson(res, 200, {
         runId: analysis.runId,
         status: analysis.status,
-        overallScore: analysis.overallScore,
+        // No composite score — see pipeline.ts's AnalyzeResult / scorer.ts's
+        // header comment for why. One row per pillar (usually ucp +
+        // agent_readability), each with its own meaning; never averaged.
+        pillars: analysis.pillars,
         artifactTypes: analysis.artifactTypes,
         reportUrl,
         bundleUrl,

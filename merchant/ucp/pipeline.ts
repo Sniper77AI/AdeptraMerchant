@@ -40,7 +40,7 @@ import { runPaymentChecks } from "./paymentChecks.ts";
 import { runReadinessChecks } from "./readinessChecks.ts";
 import { runArtifacts, type ArtifactContext } from "./artifacts/index.ts";
 import { httpFetcher } from "./httpFetcher.ts";
-import { scorePillars, overallScore } from "./scorer.ts";
+import { scorePillars, type PillarScoreRow } from "./scorer.ts";
 import {
   createRun,
   completeRun,
@@ -124,7 +124,12 @@ export interface AnalyzeInput {
 export interface AnalyzeResult {
   runId: string;
   status: "complete" | "no_manifest" | "failed";
-  overallScore: number | null;
+  // One row per pillar scored this run (usually ucp + agent_readability, even
+  // on a no_manifest run — agent_readability doesn't depend on a manifest).
+  // No composite: the two pillars measure non-commensurable things and
+  // averaging them produced a number with no defensible referent — see
+  // scorer.ts's header comment and the README for the full reasoning.
+  pillars: PillarScoreRow[];
   pillarCount: number;
   signalCount: number;
   artifactCount: number;
@@ -195,7 +200,6 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
     const signalKeyToId = new Map(insertedSignals.map((s) => [s.signal_key, s.id]));
     const pillars = scorePillars(signals);
     const nPillars = await insertPillarScores(cfg, run.runId, pillars);
-    const overall = overallScore(pillars);
 
     const ctx: ArtifactContext = {
       manifest,
@@ -213,7 +217,7 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
     if (noManifest) {
       await markNoManifest(cfg, run.runId);
     } else {
-      await completeRun(cfg, run.runId, overall);
+      await completeRun(cfg, run.runId);
     }
 
     log(`wrote: ${insertedSignals.length} signals, ${nPillars} pillar score(s)`);
@@ -229,12 +233,12 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
         for (const item of c.must_complete) log(`    - ${item}`);
       }
     }
-    log(`run:   ${run.runId} (${noManifest ? "no_manifest" : `complete, overall ${overall}`})`);
+    log(`run:   ${run.runId} (${noManifest ? "no_manifest" : "complete"})`);
 
     return {
       runId: run.runId,
       status: noManifest ? "no_manifest" : "complete",
-      overallScore: noManifest ? null : overall,
+      pillars,
       pillarCount: nPillars,
       signalCount: insertedSignals.length,
       artifactCount: insertedArtifacts.length,
@@ -246,7 +250,7 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
     return {
       runId: run.runId,
       status: "failed",
-      overallScore: null,
+      pillars: [],
       pillarCount: 0,
       signalCount: 0,
       artifactCount: 0,
