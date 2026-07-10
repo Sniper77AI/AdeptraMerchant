@@ -341,6 +341,7 @@ function analysisHandlers(signalsStatus = 200): MockHandler[] {
         respond: () => jsonResponse([{ id: "run-2", site_id: "site-1", status: "complete", overall_score: 90, created_at: "2026-07-08T00:00:00.000Z", sites: { domain: "mock-store.test" } }]),
       },
       { match: (u, m) => u.includes("/rest/v1/pillar_scores") && m === "GET", respond: () => jsonResponse([]) },
+      { match: (u, m) => u.includes("/rest/v1/signal_evidence") && m === "GET", respond: () => jsonResponse([]) },
       { match: (u, m) => u.includes("/rest/v1/signals") && m === "GET", respond: () => jsonResponse([]) },
       { match: (u, m) => u.includes("/rest/v1/artifacts") && m === "GET", respond: () => jsonResponse([]) },
     ],
@@ -366,6 +367,7 @@ function analysisHandlers(signalsStatus = 200): MockHandler[] {
         respond: () => jsonResponse([{ id: "run-3", site_id: "site-1", status: "complete", overall_score: 77.5, created_at: "2026-07-08T00:00:00.000Z", sites: { domain: "mock-store.test" } }]),
       },
       { match: (u, m) => u.includes("/rest/v1/pillar_scores") && m === "GET", respond: () => jsonResponse([{ pillar: "ucp", score: 77.5, signals_passed: 10, signals_total: 13 }]) },
+      { match: (u, m) => u.includes("/rest/v1/signal_evidence") && m === "GET", respond: () => jsonResponse([]) },
       { match: (u, m) => u.includes("/rest/v1/signals") && m === "GET", respond: () => jsonResponse([]) },
       {
         match: (u, m) => u.includes("/rest/v1/artifacts") && m === "GET",

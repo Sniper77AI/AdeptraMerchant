@@ -33,11 +33,18 @@ export const BUNDLE_DOWNLOAD_URL_TOKEN = "{{BUNDLE_DOWNLOAD_URL}}";
 
 export interface RunBundleSignal {
   signal_key: string;
+  pillar: string;
   category: string;
   status: "pass" | "partial" | "fail" | "not_applicable";
   weight: number;
   priority_score: number;
   fix_summary: string | null;
+  // From signal_evidence — joined by signal_key at read time, not snapshotted
+  // onto the signals row (basis is a fact about external evidence, which can
+  // be revised after the run; looking it up fresh keeps every re-render
+  // current without ever mutating a completed run's scored signals).
+  basis: string | null;
+  merchant_note: string | null;
 }
 
 export interface RunBundleArtifact {
@@ -85,6 +92,26 @@ const ARTIFACT_TYPE_DISPLAY_NAMES: Record<string, string> = {
   mcp_scaffold: "WooCommerce MCP Shopping Server",
 };
 
+// ---------------------------------------------------------------------------
+// pillar -> friendly section name + one-line description. aeo_geo isn't
+// listed: it's an intentionally empty pillar (see README) and never appears
+// in real signal data, so it never needs a display name here.
+// ---------------------------------------------------------------------------
+
+const PILLAR_DISPLAY_NAMES: Record<string, string> = {
+  ucp: "UCP Protocol Compliance",
+  agent_readability: "Agent Readability",
+};
+
+const PILLAR_DESCRIPTIONS: Record<string, string> = {
+  ucp: "Can an AI shopping agent complete a purchase through the Universal Commerce Protocol — manifest, capabilities, and feed/page data that all agree with each other.",
+  agent_readability: "Can a generic AI system access, parse, and correctly understand this store at all — independent of UCP, and independent of any claim about AI search visibility or citation lift.",
+};
+
+export function pillarDisplayName(pillar: string): string {
+  return PILLAR_DISPLAY_NAMES[pillar] ?? pillar;
+}
+
 export function typeDisplayName(artifactType: string): string {
   if (ARTIFACT_TYPE_DISPLAY_NAMES[artifactType]) return ARTIFACT_TYPE_DISPLAY_NAMES[artifactType];
   return artifactType
@@ -120,21 +147,53 @@ interface ReportArtifact {
   fileList?: string[]; // set only for multi-file (file-tree) artifacts — see decodeFileTree
 }
 
+/** One section per pillar present in the run's signals, in first-seen order
+ *  (pipeline.ts pushes ucp signals before agent_readability's, so this falls
+ *  out naturally — no hardcoded pillar list to keep in sync). */
+interface PillarSection {
+  pillar: string;
+  displayName: string;
+  description: string;
+  passing: RunBundleSignal[];
+  toFix: RunBundleSignal[]; // fail/partial, sorted by priority_score desc
+}
+
 interface ReportModel {
   domain: string;
   runId: string;
   createdAt: string;
   hasManifest: boolean; // false => no_manifest — never show a punitive 0%
   overallScore: number | null;
+  pillarCount: number; // a 1-pillar run and a 2-pillar run aren't comparable at face value
   pillars: PillarScoreRow[];
-  passing: RunBundleSignal[];
-  toFix: RunBundleSignal[]; // fail/partial, sorted by priority_score desc
+  sections: PillarSection[];
   artifacts: ReportArtifact[];
 }
 
+function pillarOrder(signals: RunBundleSignal[]): string[] {
+  const order: string[] = [];
+  for (const s of signals) if (!order.includes(s.pillar)) order.push(s.pillar);
+  return order;
+}
+
+function buildSections(data: RunBundleData): PillarSection[] {
+  return pillarOrder(data.signals).map((pillar) => {
+    const pillarSignals = data.signals.filter((s) => s.pillar === pillar);
+    return {
+      pillar,
+      displayName: pillarDisplayName(pillar),
+      description: PILLAR_DESCRIPTIONS[pillar] ?? "",
+      passing: pillarSignals.filter((s) => s.status === "pass"),
+      toFix: pillarSignals
+        .filter((s) => s.status === "fail" || s.status === "partial")
+        .slice()
+        .sort((a, b) => b.priority_score - a.priority_score),
+    };
+  });
+}
+
 function buildModel(data: RunBundleData): ReportModel {
-  const passing = data.signals.filter((s) => s.status === "pass");
-  const toFix = data.signals.filter((s) => s.status === "fail" || s.status === "partial").slice().sort((a, b) => b.priority_score - a.priority_score);
+  const sections = buildSections(data);
   const artifacts = data.artifacts.map((a) => {
     const fileTree = a.content ? decodeFileTree(a.content) : null;
     return {
@@ -152,9 +211,9 @@ function buildModel(data: RunBundleData): ReportModel {
     createdAt: data.createdAt,
     hasManifest: data.status !== "no_manifest",
     overallScore: data.overallScore,
+    pillarCount: data.pillars.length,
     pillars: data.pillars,
-    passing,
-    toFix,
+    sections,
     artifacts,
   };
 }
@@ -196,29 +255,43 @@ function renderMarkdown(model: ReportModel): string {
   if (model.pillars.length === 0) {
     lines.push("No pillar scores recorded for this run.");
   } else {
-    for (const p of model.pillars) lines.push(`- **${p.pillar}**: ${p.score}% (${p.signals_passed}/${p.signals_total} checks passed)`);
+    if (model.pillarCount < 2) {
+      lines.push(`_This run scored ${model.pillarCount} pillar — scores here aren't directly comparable to a run that scored more._`);
+      lines.push("");
+    }
+    for (const p of model.pillars) lines.push(`- **${pillarDisplayName(p.pillar)}**: ${p.score}% (${p.signals_passed}/${p.signals_total} checks passed)`);
   }
   lines.push("");
 
-  lines.push("## What's working");
-  lines.push("");
-  if (model.passing.length === 0) {
-    lines.push("Nothing passing yet — see the fixes below.");
-  } else {
-    for (const s of model.passing) lines.push(`- ${s.signal_key}`);
-  }
-  lines.push("");
+  for (const section of model.sections) {
+    lines.push(`## ${section.displayName}`);
+    lines.push("");
+    if (section.description) {
+      lines.push(section.description);
+      lines.push("");
+    }
 
-  lines.push("## What to fix (in priority order)");
-  lines.push("");
-  if (model.toFix.length === 0) {
-    lines.push("Nothing outstanding — every applicable check passes.");
-  } else {
-    model.toFix.forEach((s, i) => {
-      lines.push(`${i + 1}. **${s.signal_key}** (${s.status}) — ${s.fix_summary ?? "see evidence for details"}`);
-    });
+    lines.push("### What's working");
+    lines.push("");
+    if (section.passing.length === 0) {
+      lines.push("Nothing passing yet — see the fixes below.");
+    } else {
+      for (const s of section.passing) lines.push(`- ${s.signal_key}`);
+    }
+    lines.push("");
+
+    lines.push("### What to fix (in priority order)");
+    lines.push("");
+    if (section.toFix.length === 0) {
+      lines.push("Nothing outstanding — every applicable check passes.");
+    } else {
+      section.toFix.forEach((s, i) => {
+        lines.push(`${i + 1}. **${s.signal_key}** (${s.status}) — ${s.fix_summary ?? "see evidence for details"}`);
+        if (s.merchant_note) lines.push(`   - *Evidence (${s.basis ?? "unspecified"}):* ${s.merchant_note}`);
+      });
+    }
+    lines.push("");
   }
-  lines.push("");
 
   lines.push("## Your generated fixes");
   lines.push("");
@@ -269,21 +342,38 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
     : `<div class="offline-note">This is the offline copy included in your downloaded bundle — no separate download needed.</div>`;
 
   const pillarRows = model.pillars
-    .map((p) => `<tr><td>${escapeHtml(p.pillar)}</td><td>${p.score}%</td><td>${p.signals_passed}/${p.signals_total}</td></tr>`)
+    .map((p) => `<tr><td>${escapeHtml(pillarDisplayName(p.pillar))}</td><td>${p.score}%</td><td>${p.signals_passed}/${p.signals_total}</td></tr>`)
     .join("\n");
+  const pillarCountNote =
+    model.pillarCount < 2
+      ? `<p class="muted">This run scored ${model.pillarCount} pillar — scores here aren't directly comparable to a run that scored more.</p>`
+      : "";
 
-  const passingItems = model.passing.length
-    ? model.passing.map((s) => `<li>${escapeHtml(s.signal_key)}</li>`).join("\n")
-    : `<li class="muted">Nothing passing yet — see "What to fix" below.</li>`;
+  const sectionBlocks = model.sections
+    .map((section) => {
+      const passingItems = section.passing.length
+        ? section.passing.map((s) => `<li>${escapeHtml(s.signal_key)}</li>`).join("\n")
+        : `<li class="muted">Nothing passing yet — see "What to fix" below.</li>`;
 
-  const fixItems = model.toFix.length
-    ? model.toFix
-        .map(
-          (s, i) =>
-            `<li><span class="fix-rank">${i + 1}</span> <span class="fix-key">${escapeHtml(s.signal_key)}</span><span class="fix-status status-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span><p>${escapeHtml(s.fix_summary ?? "See evidence for details.")}</p></li>`,
-        )
-        .join("\n")
-    : `<li class="muted">Nothing outstanding — every applicable check passes.</li>`;
+      const fixItems = section.toFix.length
+        ? section.toFix
+            .map((s, i) => {
+              const note = s.merchant_note
+                ? `<p class="evidence-note"><strong>Evidence (${escapeHtml(s.basis ?? "unspecified")}):</strong> ${escapeHtml(s.merchant_note)}</p>`
+                : "";
+              return `<li><span class="fix-rank">${i + 1}</span> <span class="fix-key">${escapeHtml(s.signal_key)}</span><span class="fix-status status-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span><p>${escapeHtml(s.fix_summary ?? "See evidence for details.")}</p>${note}</li>`;
+            })
+            .join("\n")
+        : `<li class="muted">Nothing outstanding — every applicable check passes.</li>`;
+
+      return `<h2>${escapeHtml(section.displayName)}</h2>
+  ${section.description ? `<p class="pillar-description">${escapeHtml(section.description)}</p>` : ""}
+  <h3>What's working</h3>
+  <ul>${passingItems}</ul>
+  <h3>What to fix (in priority order)</h3>
+  <ul>${fixItems}</ul>`;
+    })
+    .join("\n\n");
 
   const artifactBlocks = model.artifacts.length
     ? model.artifacts
@@ -344,6 +434,10 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
   .fix-status { font-size: 0.75rem; text-transform: uppercase; margin-left: 0.5rem; padding: 0.05rem 0.4rem; border-radius: 4px; }
   .status-fail { background: #fdecea; color: #7a1f1f; }
   .status-partial { background: #fff4e5; color: #7a4b00; }
+  .pillar-description { color: #666; font-size: 0.92rem; margin-top: -0.5rem; }
+  @media (prefers-color-scheme: dark) { .pillar-description { color: #999; } }
+  .evidence-note { font-size: 0.85rem; color: #555; background: #f6f7f9; border-radius: 6px; padding: 0.4rem 0.6rem; margin-top: 0.4rem; }
+  @media (prefers-color-scheme: dark) { .evidence-note { color: #bbb; background: #1c1f22; } }
   .artifact { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
   @media (prefers-color-scheme: dark) { .artifact { border-color: #2a2d30; } }
   .artifact h3 { margin-top: 0; font-size: 1rem; }
@@ -365,16 +459,13 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
   <p>AI shopping agents (ChatGPT, Gemini, Perplexity, Google AI Mode) can only recommend, compare, and check out through stores they can discover, parse, and trust. This report shows where this store stands today and exactly what to fix, in priority order.</p>
 
   <h2>Scores by pillar</h2>
+  ${pillarCountNote}
   <table>
     <thead><tr><th>Pillar</th><th>Score</th><th>Checks passed</th></tr></thead>
     <tbody>${pillarRows || '<tr><td colspan="3" class="muted">No pillar scores recorded.</td></tr>'}</tbody>
   </table>
 
-  <h2>What's working</h2>
-  <ul>${passingItems}</ul>
-
-  <h2>What to fix (in priority order)</h2>
-  <ul>${fixItems}</ul>
+  ${sectionBlocks}
 
   <h2>Your generated fixes</h2>
   ${artifactBlocks}

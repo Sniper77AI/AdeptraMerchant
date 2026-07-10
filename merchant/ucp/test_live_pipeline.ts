@@ -465,9 +465,11 @@ const FEED_VARIANTS: FeedVariant[] = [
     fetchCount++;
     return { status: 200, headers: {}, body: htmlWithJsonLd(PRODUCT_GROUP_JSONLD), redirectChain: [], requiresAuth: false };
   };
-  const comparisons = await sampleAndCompare(FEED_VARIANTS, countingFetcher);
+  const { comparisons, pageStates } = await sampleAndCompare(FEED_VARIANTS, countingFetcher);
   check("sampleAndCompare: both variants matched by sku", comparisons.every((c) => c.pageFound), comparisons);
   check("sampleAndCompare: shared product link fetched once, not twice (de-duped)", fetchCount === 1, { fetchCount });
+  check("sampleAndCompare: pageStates has one deduped entry for the shared link", pageStates.length === 1, pageStates);
+  check("sampleAndCompare: pageStates carries rawHtml (in-memory only)", pageStates[0].rawHtml === htmlWithJsonLd(PRODUCT_GROUP_JSONLD), pageStates[0]);
 
   const idSignal = sig_product_id_consistency(comparisons);
   const priceSignal = sig_price_consistency(comparisons);
@@ -494,7 +496,7 @@ const FEED_VARIANTS: FeedVariant[] = [
     redirectChain: [],
     requiresAuth: false,
   });
-  const comparisons = await sampleAndCompare(FEED_VARIANTS, mockMismatched);
+  const { comparisons } = await sampleAndCompare(FEED_VARIANTS, mockMismatched);
   const priceSignal = sig_price_consistency(comparisons);
   check("price_consistency: fail when mismatch_rate >= 20%", priceSignal.status === "fail", priceSignal);
 }
@@ -508,7 +510,7 @@ const FEED_VARIANTS: FeedVariant[] = [
     redirectChain: [],
     requiresAuth: false,
   });
-  const comparisons = await sampleAndCompare(FEED_VARIANTS, noMatchFetcher);
+  const { comparisons } = await sampleAndCompare(FEED_VARIANTS, noMatchFetcher);
   check("sampleAndCompare: pageFound false when no sku matches", comparisons.every((c) => !c.pageFound), comparisons);
   const idSignal = sig_product_id_consistency(comparisons);
   check("product_id_consistency: fail when no sampled sku is found on its page", idSignal.status === "fail", idSignal);
@@ -521,7 +523,7 @@ const FEED_VARIANTS: FeedVariant[] = [
   const mockUnreachable: Fetcher = async () => {
     throw new Error("ECONNREFUSED");
   };
-  const comparisons = await sampleAndCompare(FEED_VARIANTS, mockUnreachable);
+  const { comparisons } = await sampleAndCompare(FEED_VARIANTS, mockUnreachable);
   check("sampleAndCompare: fetchError recorded when the page is unreachable", comparisons.every((c) => !!c.fetchError), comparisons);
   check("product_id_consistency: not_applicable when every sampled page failed to fetch", sig_product_id_consistency(comparisons).status === "not_applicable", comparisons);
 }
@@ -555,12 +557,14 @@ const FEED_VARIANTS: FeedVariant[] = [
     redirectChain: [],
     requiresAuth: false,
   });
-  const signals = await runPageConsistencyChecks(variants, goodPageFetcher);
+  const { signals, pageStates } = await runPageConsistencyChecks(variants, goodPageFetcher);
   check("runPageConsistencyChecks: returns all three signals", signals.length === 3, signals);
   check("runPageConsistencyChecks: all pass end-to-end", signals.every((s) => s.status === "pass"), signals);
+  check("runPageConsistencyChecks: exposes the fetched page states", pageStates.length === 1, pageStates);
 
-  const noVariantsSignals = await runPageConsistencyChecks([], goodPageFetcher);
+  const { signals: noVariantsSignals, pageStates: noVariantsPageStates } = await runPageConsistencyChecks([], goodPageFetcher);
   check("runPageConsistencyChecks: not_applicable across the board with no feed variants", noVariantsSignals.every((s) => s.status === "not_applicable"), noVariantsSignals);
+  check("runPageConsistencyChecks: pageStates empty when there are no feed variants to sample", noVariantsPageStates.length === 0, noVariantsPageStates);
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,18 @@ merchant/
                                                         # capability_checkout_declared score not_applicable instead
                                                         # of fail for a store deliberately using the catalog+cart-only
                                                         # UCP profile (payment via the cart's continue_url handoff)
+      20260711000000_signal_evidence.sql                # signal_evidence table — evidence as DATA, not code.
+                                                        # basis CHECK constraint: specified/measured/documented/
+                                                        # contested/no_evidence. Seeded with the 10 agent_readability
+                                                        # signals' citations. Global reference data (not tenant-
+                                                        # scoped) — RLS is a simple authenticated-read-all policy
+      20260711000010_sites_ai_training_opt_out.sql      # sites.ai_training_opt_out — same shape/reasoning as
+                                                        # checkout_handoff_opt_in: blocking GPTBot/ClaudeBot for AI
+                                                        # training is a legitimate merchant decision, attested here,
+                                                        # never inferred from robots.txt contents alone
+      # Note: the applied Supabase migration version (see `list_migrations`) doesn't match this
+      # filename's timestamp prefix — a pre-existing quirk for every migration in this list, not
+      # unique to these two; the filename is for human organization, the DB tracks its own version
       # Storage bucket "merchant-exports" (private) and exports table predate this — see Export & Delivery below
       # sites.platform (TEXT, nullable, no CHECK) predates this too — set manually until onboarding writes it
   ucp/
@@ -51,6 +63,28 @@ merchant/
                            # / shipping_info_present_consistent (best-effort probe of known Shopify +
                            # custom-storefront path conventions — no general crawler yet) /
                            # support_contact_present (schema.org Organization.contactPoint)
+    readabilityChecks.ts   # SECOND PILLAR — agent_readability (pillar='agent_readability', NOT UCP,
+                           # NOT AEO/GEO): "can a generic AI system access, parse, and correctly
+                           # understand this store?" No claim about AI citation lift. 10 signals across
+                           # 4 categories — crawler_access (robots_txt_valid, ai_crawler_access_retrieval,
+                           # ai_crawler_access_training), content_legibility (content_server_rendered,
+                           # schema_in_raw_html — highest-value, since Vercel/MERJ's network analysis of
+                           # 569M+ real GPTBot fetches found no major AI crawler executes JavaScript,
+                           # Gemini/AppleBot excepted — httpFetcher.ts already doesn't either, so every
+                           # signal here checks the exact raw HTML an AI crawler would see), structured_data
+                           # (product_schema_present, offer_schema_complete, organization_schema_present),
+                           # discovery_surfaces (sitemap_present, llms_txt_present). Hand-rolled,
+                           # zero-dependency robots.txt parser with per-token semantics (a `ClaudeBot`
+                           # block does NOT apply to `Claude-SearchBot`) and longest-rule-wins/tie-goes-
+                           # to-Allow matching. Reuses pageChecks.ts's fetchProductPage/sampleAndCompare
+                           # for feed-grounded sampling (rawHtml exposed on ProductPageState, in-memory
+                           # only — never written to evidence_json); falls back to its own sitemap-driven
+                           # sampling (one-level index-sitemap follow + product-path filtering) for a
+                           # no-feed store, since that's the store most likely to have the
+                           # content_server_rendered SPA problem. ai_crawler_access_training respects
+                           # sites.ai_training_opt_out (not_applicable when attested, never inferred).
+                           # Every claim's evidentiary strength lives in the signal_evidence table
+                           # (looked up at report-build time, not snapshotted), not hardcoded here.
     paymentChecks.ts       # Category 4 (Payment / AP2 Readiness): ap2_compatibility_declared /
                            # credential_security_posture read ucp.payment_handlers from the already-
                            # fetched manifest (no new network call); merchant_of_record_declared is
@@ -337,6 +371,22 @@ merchant/
                            # artifact expansion (a real encodeFileTree payload → every file lands
                            # under the expected subfolder in files[], exact contents, shows in the
                            # report, and round-trips through the real ZIP writer)
+    test_readability.ts    # robots.txt parsing (grouping, per-token blocking incl. the
+                           # ClaudeBot-does-not-mean-Claude-SearchBot case, wildcard fallback,
+                           # longest-rule-wins with tie-goes-to-Allow), all 10 agent_readability
+                           # signals' pass/partial/fail/not_applicable branches, the CORRECTED
+                           # content_server_rendered heuristic (fail fires from raw-HTML shell
+                           # detection alone, no feed needed; only pass needs feed grounding;
+                           # not_applicable only when literally no page could be sampled),
+                           # sitemap-index-follow + product-path-filtering fallback sampling, and a
+                           # dedicated no-persist guardrail asserting no signal's evidence_json ever
+                           # contains a full HTML document
+    test_pageChecks_golden.ts # Golden-fixture regression lock for pageChecks.ts's three UCP page-
+                           # consistency signals, captured BEFORE the rawHtml/pageStates signature
+                           # change (added so agent_readability's content-legibility signals could
+                           # reuse the same fetched pages) — `capture` writes the fixture, `verify`
+                           # diffs current output against it byte-for-byte. Verified byte-identical
+                           # before and after the pageChecks.ts change
     test_pipeline.ts       # ensureSiteFromIntake (real client+site rows with platform/feed_url/
                            # opt-out written to the right columns, default clientName=domain,
                            # PATCH-not-duplicate on a repeat submission), runAnalysis (documented
@@ -539,8 +589,68 @@ isn't wired to anything real.
 ## Status
 
 **All 25 UCP signals across all 6 categories in `signal-specs.md` are implemented, tested, and
-live-verified against two real stores (skims.com, gymshark.com).**
+live-verified against two real stores (skims.com, gymshark.com). A second, independent pillar —
+`agent_readability` (10 signals) — is now also implemented, tested, and live-verified.**
 
+- [x] **Second pillar: `agent_readability` (2026-07-11).** `pillar='agent_readability'` — "can a
+      generic AI system access, parse, and correctly understand this store?", deliberately NOT a
+      claim about AEO/GEO citation lift. `aeo_geo` is a third pillar value the schema has allowed
+      since its very first migration, but it stays **intentionally empty** — no signals are scored
+      into it — until credible evidence justifies claiming an effect on AI search visibility.
+      Locked pillar boundary, enforced by construction (no signal_key exists in both): `ucp` =
+      protocol compliance (manifest, capabilities, feed data, feed/page consistency, payment
+      readiness); `agent_readability` = site legibility to ANY machine (crawler access, raw-HTML
+      content, page-level schema markup, discovery surfaces).
+      New `signal_evidence` table decouples fast-moving epistemic judgments from code deploys — a
+      `basis` column (`specified` / `measured` / `documented` / `contested` / `no_evidence`) rated
+      per signal, looked up fresh at report-build time (never snapshotted onto a `signals` row, so
+      a later evidence correction is reflected on every re-render, not frozen at scan time), plus a
+      `merchant_note` surfaced next to every failing/partial `agent_readability` signal in the
+      report — the disclosure IS the product, not a footnote. Key correction made during a
+      pre-build verification pass: the "AI crawlers don't execute JavaScript" finding is NOT from
+      OpenAI's or Anthropic's own crawler docs (checked directly — neither mentions JS execution at
+      all); it's Vercel + MERJ's independent network-level measurement of 569M+ real GPTBot fetches
+      (Gemini and AppleBot are the documented exceptions). That gap — an empirically *measured*
+      fact being asked to fit into a `documented` (vendor-self-disclosed) bucket — is why `basis`
+      has five values, not four: `measured` is stronger than `documented` for behavioral claims,
+      since docs can be stale or aspirational while an observation is what actually happened.
+      `content_server_rendered` and `schema_in_raw_html` are rated `measured` on that citation.
+      New `sites.ai_training_opt_out` attestation (third of the pattern, after
+      `identity_linking_opt_out`/`checkout_handoff_opt_in`): blocking GPTBot/ClaudeBot to keep
+      content out of AI training is a legitimate business decision, never inferred from robots.txt
+      contents alone. `content_server_rendered`'s heuristic was corrected before building: FAIL
+      fires from raw-HTML shell-pattern detection alone (no feed needed) — the store MOST likely to
+      have the SPA problem is a custom store with no feed, and under the original design that store
+      could never reach `fail`, only `partial`/`not_applicable`; only PASS needs feed grounding
+      (confirming the page's visible text actually matches the feed's known title/price); a no-feed
+      store now caps at `partial` instead of being silently exempted. `not_applicable` means
+      literally zero product pages could be sampled by any means. `pageChecks.ts`'s
+      `fetchProductPage`/`sampleAndCompare` were extended (not duplicated) to expose raw HTML +
+      the deduped page-state map for reuse — `rawHtml` is in-memory only, asserted by a dedicated
+      test to never reach `evidence_json` (only lengths/booleans/the threshold constant do). A
+      golden fixture of the three UCP page-consistency signals' exact output was captured *before*
+      that signature change and diffed *after* — **byte-identical**, confirming the refactor didn't
+      alter UCP scoring by a single byte (`test_pageChecks_golden.ts`). No-feed stores get their own
+      sitemap-driven fallback sampling (one-level index-sitemap follow, product-path-convention
+      filtering) reusing the same `fetchProductPage`. Hand-rolled, zero-dependency robots.txt parser
+      with per-token semantics — a `User-agent: ClaudeBot` block does NOT apply to
+      `Claude-SearchBot`, each literal token gets its own lookup with wildcard fallback, and a tied
+      Allow/Disallow rule length resolves to Allow (a real bug caught by the test suite: the first
+      cut resolved same-length ties to whichever rule appeared first in the file, not to the
+      documented least-restrictive-wins convention). `overallScore` stays a simple unweighted mean
+      of whatever pillar scores are present (no scorer.ts change — it was already pillar-agnostic by
+      design); `pillarCount` is surfaced alongside it everywhere it's displayed so a 1-pillar run and
+      a 2-pillar run are never silently compared as equivalent numbers. Live-verified end-to-end
+      against skims.com (an existing real-store test site, `is_test=true`): one run wrote exactly
+      **10 `agent_readability` signals + 25 `ucp` signals + 2 `pillar_scores` rows** — the DB query
+      confirms the 10/25 split precisely — scoring `ucp` 81.41% and `agent_readability` 97.14%
+      (content_server_rendered and schema_in_raw_html both `pass` on skims.com's real, server-
+      rendered product pages; the lone `fail` was `llms_txt_present`, expected since skims.com
+      doesn't publish one). The exported report correctly renders two pillar sections
+      ("UCP Protocol Compliance", "Agent Readability") with the failing signal's `basis` +
+      `merchant_note` disclosed inline. Both migrations applied via Supabase MCP and verified live
+      (`list_migrations` + column/constraint/trigger/RLS-policy/seed-row spot-checks via
+      `execute_sql`, matching the rigor already established for `checkout_handoff_opt_in`/`is_test`).
 - [x] Database schema (deployed to Supabase)
 - [x] UCP compliance signal specs (v1)
 - [x] Category 1 — Discovery & Manifest, all 4 signals (tested against mocks, live-verified)

@@ -60,6 +60,13 @@ export interface ProductPageState {
   variants: PageVariant[];
   productDescription: string | null; // product/group-level description (llmChecks.ts)
   productAttributes: Record<string, unknown> | null; // extra structured fields beyond price/availability/sku (llmChecks.ts)
+  // Raw HTML body, in-memory only — the same bytes an AI crawler would fetch
+  // (httpFetcher does not execute JS, so this IS what GPTBot/ClaudeBot see).
+  // Consumed by readabilityChecks.ts's content-legibility signals. NEVER
+  // persisted: it must not appear in any evidence_json written to the DB —
+  // only derived fields (lengths, booleans) may. null when the fetch didn't
+  // reach a 2xx response (nothing meaningful to inspect).
+  rawHtml: string | null;
   errorNote?: string;
 }
 
@@ -72,6 +79,15 @@ export interface SampledComparison {
   pageAvailable: boolean | null;
   pageFound: boolean; // false when no page-side variant matched this sku at all
   fetchError: string | null;
+}
+
+/** sampleAndCompare's result: the UCP cross-surface comparisons, plus the
+ *  deduped ProductPageState for every page fetched along the way (one entry
+ *  per distinct URL, in first-fetch order) — so agent_readability's content-
+ *  legibility signals can inspect the same fetched pages without re-fetching. */
+export interface SampleAndCompareResult {
+  comparisons: SampledComparison[];
+  pageStates: ProductPageState[];
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +169,7 @@ function extractProductLevel(blocks: any[]): { description: string | null; attri
 // ---------------------------------------------------------------------------
 
 export async function fetchProductPage(url: string, fetcher: Fetcher): Promise<ProductPageState> {
-  const base: ProductPageState = { url, reachable: false, httpStatus: null, variants: [], productDescription: null, productAttributes: null };
+  const base: ProductPageState = { url, reachable: false, httpStatus: null, variants: [], productDescription: null, productAttributes: null, rawHtml: null };
   let res: Awaited<ReturnType<Fetcher>>;
   try {
     res = await fetcher(url, PAGE_FETCH_TIMEOUT_MS);
@@ -173,6 +189,7 @@ export async function fetchProductPage(url: string, fetcher: Fetcher): Promise<P
       variants: extractVariants(blocks),
       productDescription: description,
       productAttributes: attributes,
+      rawHtml: res.body,
     };
   } catch (e) {
     return { ...base, reachable: true, httpStatus: res.status, errorNote: `extract_failed: ${(e as Error).message}` };
@@ -187,14 +204,18 @@ export async function sampleAndCompare(
   feedVariants: FeedVariant[],
   fetcher: Fetcher,
   sampleSize = DEFAULT_SAMPLE_SIZE,
-): Promise<SampledComparison[]> {
+): Promise<SampleAndCompareResult> {
   const sample = feedVariants.filter((v) => !!v.link).slice(0, sampleSize);
 
   const pageCache = new Map<string, Promise<ProductPageState>>();
+  const pageStates: ProductPageState[] = [];
   const pageFor = (link: string) => {
     let p = pageCache.get(link);
     if (!p) {
-      p = fetchProductPage(link, fetcher);
+      p = fetchProductPage(link, fetcher).then((state) => {
+        pageStates.push(state);
+        return state;
+      });
       pageCache.set(link, p);
     }
     return p;
@@ -215,7 +236,7 @@ export async function sampleAndCompare(
       fetchError: page.errorNote ?? null,
     });
   }
-  return results;
+  return { comparisons: results, pageStates };
 }
 
 // ---------------------------------------------------------------------------
@@ -354,15 +375,30 @@ export function sig_availability_consistency(comparisons: SampledComparison[] | 
 // Orchestrator
 // ---------------------------------------------------------------------------
 
+/** signals: the three UCP cross-surface consistency signals, unchanged in
+ *  content/shape from before pageStates was added (see test_pageChecks_golden.ts).
+ *  pageStates: every distinct product page fetched along the way, for reuse
+ *  by agent_readability's content-legibility signals — [] when there were no
+ *  feed variants to sample (readabilityChecks.ts falls back to its own
+ *  sitemap-driven sampling in that case). */
+export interface PageConsistencyResult {
+  signals: SignalRow[];
+  pageStates: ProductPageState[];
+}
+
 export async function runPageConsistencyChecks(
   feedVariants: FeedVariant[],
   fetcher: Fetcher,
   sampleSize = DEFAULT_SAMPLE_SIZE,
-): Promise<SignalRow[]> {
-  const comparisons = feedVariants.length > 0 ? await sampleAndCompare(feedVariants, fetcher, sampleSize) : null;
-  return [
-    sig_product_id_consistency(comparisons),
-    sig_price_consistency(comparisons),
-    sig_availability_consistency(comparisons),
-  ];
+): Promise<PageConsistencyResult> {
+  const sampled = feedVariants.length > 0 ? await sampleAndCompare(feedVariants, fetcher, sampleSize) : null;
+  const comparisons = sampled?.comparisons ?? null;
+  return {
+    signals: [
+      sig_product_id_consistency(comparisons),
+      sig_price_consistency(comparisons),
+      sig_availability_consistency(comparisons),
+    ],
+    pageStates: sampled?.pageStates ?? [],
+  };
 }

@@ -35,6 +35,7 @@ import { runFeedChecks, extractFeedVariants } from "./feedChecks.ts";
 import { runPageConsistencyChecks } from "./pageChecks.ts";
 import { runLlmChecks, openAiClient, type LlmClient } from "./llmChecks.ts";
 import { runPolicyChecks } from "./policyChecks.ts";
+import { runReadabilityChecks } from "./readabilityChecks.ts";
 import { runPaymentChecks } from "./paymentChecks.ts";
 import { runReadinessChecks } from "./readinessChecks.ts";
 import { runArtifacts, type ArtifactContext } from "./artifacts/index.ts";
@@ -71,6 +72,7 @@ export interface IntakeInput {
   feedUrl?: string;
   identityLinkingOptOut?: boolean;
   checkoutHandoffOptIn?: boolean;
+  aiTrainingOptOut?: boolean;
   merchantCenter?: {
     accountReady?: boolean;
     feedsConfigured?: boolean;
@@ -99,6 +101,7 @@ export async function ensureSiteFromIntake(input: IntakeInput): Promise<{ siteId
     feedUrl: input.feedUrl,
     identityLinkingOptOut: input.identityLinkingOptOut,
     checkoutHandoffOptIn: input.checkoutHandoffOptIn,
+    aiTrainingOptOut: input.aiTrainingOptOut,
     merchantCenterAccountReady: input.merchantCenter?.accountReady,
     merchantCenterFeedsConfigured: input.merchantCenter?.feedsConfigured,
     ucpEarlyAccessStatus: input.merchantCenter?.earlyAccessStatus,
@@ -151,7 +154,7 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
       log(`feed:  ${feed.url} → ${feed.httpStatus ?? "unreachable"} (${feed.format}, ${feed.items.length} items)${feed.errorNote ? ` (${feed.errorNote})` : ""}`);
     }
     const feedVariants = feed ? extractFeedVariants(feed) : [];
-    const pageSignals = await runPageConsistencyChecks(feedVariants, httpFetcher);
+    const { signals: pageSignals, pageStates } = await runPageConsistencyChecks(feedVariants, httpFetcher);
     if (feedVariants.length > 0) {
       log(`pages: sampled up to 15 of ${feedVariants.length} feed variants for id/price/availability cross-check`);
     }
@@ -162,6 +165,14 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
       log(`llm:   sampled up to 5 of ${feed.items.length} feed products for title/description + attribute-richness checks`);
     }
     const policySignals = await runPolicyChecks(site.rootUrl ?? `https://${domain}`, httpFetcher);
+    const readabilitySignals = await runReadabilityChecks({
+      rootUrl: site.rootUrl ?? `https://${domain}`,
+      fetcher: httpFetcher,
+      feedVariants,
+      pageStates,
+      opts: { aiTrainingOptOut: site.aiTrainingOptOut },
+    });
+    log(`readability: ${readabilitySignals.length} agent_readability signals (crawler access, content legibility, structured data, discovery surfaces)`);
     const paymentSignals = runPaymentChecks(manifest);
     const readinessSignals = runReadinessChecks({
       accountReady: site.merchantCenterAccountReady,
@@ -175,6 +186,7 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
       ...pageSignals,
       ...llmSignals,
       ...policySignals,
+      ...readabilitySignals,
       ...paymentSignals,
       ...readinessSignals,
     ];

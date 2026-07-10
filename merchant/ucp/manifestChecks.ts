@@ -19,7 +19,7 @@
 /** A row destined for the Supabase `signals` table. run_id + priority_score are
  *  added/derived at insert time, so they are intentionally absent here. */
 export interface SignalRow {
-  pillar: "ucp";
+  pillar: "ucp" | "agent_readability" | "aeo_geo";
   category: string;
   signal_key: string;
   status: "pass" | "partial" | "fail" | "not_applicable";

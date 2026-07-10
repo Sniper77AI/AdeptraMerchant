@@ -245,17 +245,15 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
   const run = runRows[0];
   if (!run) return null;
 
-  const [pillarRows, signalRows, artifactRows] = await Promise.all([
+  const [pillarRows, signalRows, artifactRows, evidenceRows] = await Promise.all([
     rest<Array<{ pillar: string; score: number; signals_passed: number; signals_total: number }>>(
       cfg,
       "GET",
       `/rest/v1/pillar_scores?run_id=eq.${runId}&select=pillar,score,signals_passed,signals_total`,
     ),
-    rest<Array<{ signal_key: string; category: string; status: SignalRow["status"]; weight: number; priority_score: number; fix_summary: string | null }>>(
-      cfg,
-      "GET",
-      `/rest/v1/signals?run_id=eq.${runId}&select=signal_key,category,status,weight,priority_score,fix_summary`,
-    ),
+    rest<
+      Array<{ signal_key: string; pillar: string; category: string; status: SignalRow["status"]; weight: number; priority_score: number; fix_summary: string | null }>
+    >(cfg, "GET", `/rest/v1/signals?run_id=eq.${runId}&select=signal_key,pillar,category,status,weight,priority_score,fix_summary`),
     rest<
       Array<{
         artifact_type: string;
@@ -265,7 +263,20 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
         resolves_signal_ids: string[] | null;
       }>
     >(cfg, "GET", `/rest/v1/artifacts?run_id=eq.${runId}&select=artifact_type,target_url,content,changelog_json,resolves_signal_ids`),
+    // signal_evidence has no FK to signals (it's global reference data, keyed
+    // by signal_key, not run-scoped) — no PostgREST embed is possible, so this
+    // is a separate query merged in below by signal_key. Looked up fresh here
+    // (not snapshotted onto the signals row) — basis is a fact about the
+    // state of external evidence, not a fact about the merchant's site at
+    // scan time, so every report render reflects the current evidence table.
+    rest<Array<{ signal_key: string; basis: string; merchant_note: string | null }>>(
+      cfg,
+      "GET",
+      `/rest/v1/signal_evidence?select=signal_key,basis,merchant_note`,
+    ),
   ]);
+
+  const evidenceByKey = new Map(evidenceRows.map((e) => [e.signal_key, e]));
 
   return {
     runId: run.id,
@@ -275,7 +286,11 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
     overallScore: run.overall_score,
     createdAt: run.created_at,
     pillars: pillarRows,
-    signals: signalRows,
+    signals: signalRows.map((s) => ({
+      ...s,
+      basis: evidenceByKey.get(s.signal_key)?.basis ?? null,
+      merchant_note: evidenceByKey.get(s.signal_key)?.merchant_note ?? null,
+    })),
     artifacts: artifactRows.map((a) => ({
       artifact_type: a.artifact_type,
       target_url: a.target_url,
@@ -319,6 +334,7 @@ export interface SiteConfig {
   platform: string | null;
   identityLinkingOptOut: boolean;
   checkoutHandoffOptIn: boolean;
+  aiTrainingOptOut: boolean;
   feedUrl: string | null;
   merchantCenterAccountReady: boolean | null;
   merchantCenterFeedsConfigured: boolean;
@@ -334,6 +350,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
       platform: string | null;
       identity_linking_opt_out: boolean;
       checkout_handoff_opt_in: boolean;
+      ai_training_opt_out: boolean;
       feed_url: string | null;
       merchant_center_account_ready: boolean | null;
       merchant_center_feeds_configured: boolean;
@@ -342,7 +359,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
   >(
     cfg,
     "GET",
-    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,platform,identity_linking_opt_out,checkout_handoff_opt_in,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
+    `/rest/v1/sites?id=eq.${siteId}&select=id,domain,root_url,platform,identity_linking_opt_out,checkout_handoff_opt_in,ai_training_opt_out,feed_url,merchant_center_account_ready,merchant_center_feeds_configured,ucp_early_access_status&limit=1`,
   );
   if (!rows[0]) throw new Error(`site not found: ${siteId}`);
   return {
@@ -352,6 +369,7 @@ export async function getSite(cfg: SupabaseConfig, siteId: string): Promise<Site
     platform: rows[0].platform,
     identityLinkingOptOut: rows[0].identity_linking_opt_out,
     checkoutHandoffOptIn: rows[0].checkout_handoff_opt_in,
+    aiTrainingOptOut: rows[0].ai_training_opt_out,
     feedUrl: rows[0].feed_url,
     merchantCenterAccountReady: rows[0].merchant_center_account_ready,
     merchantCenterFeedsConfigured: rows[0].merchant_center_feeds_configured,
@@ -430,6 +448,7 @@ export interface IntakeSiteFields {
   feedUrl?: string;
   identityLinkingOptOut?: boolean;
   checkoutHandoffOptIn?: boolean;
+  aiTrainingOptOut?: boolean;
   merchantCenterAccountReady?: boolean;
   merchantCenterFeedsConfigured?: boolean;
   ucpEarlyAccessStatus?: "not_applied" | "pending" | "approved";
@@ -441,6 +460,7 @@ export async function upsertIntakeSite(cfg: SupabaseConfig, clientId: string, fi
   if (fields.feedUrl !== undefined) patch.feed_url = fields.feedUrl;
   if (fields.identityLinkingOptOut !== undefined) patch.identity_linking_opt_out = fields.identityLinkingOptOut;
   if (fields.checkoutHandoffOptIn !== undefined) patch.checkout_handoff_opt_in = fields.checkoutHandoffOptIn;
+  if (fields.aiTrainingOptOut !== undefined) patch.ai_training_opt_out = fields.aiTrainingOptOut;
   if (fields.merchantCenterAccountReady !== undefined) patch.merchant_center_account_ready = fields.merchantCenterAccountReady;
   if (fields.merchantCenterFeedsConfigured !== undefined) patch.merchant_center_feeds_configured = fields.merchantCenterFeedsConfigured;
   if (fields.ucpEarlyAccessStatus !== undefined) patch.ucp_early_access_status = fields.ucpEarlyAccessStatus;

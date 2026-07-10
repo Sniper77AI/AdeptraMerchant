@@ -1,0 +1,151 @@
+[
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "product_id_consistency",
+    "status": "fail",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 3,
+    "evidence_json": {
+      "sampled": [
+        {
+          "sku": "SKU-PASS",
+          "page_found": true,
+          "fetch_error": null
+        },
+        {
+          "sku": "SKU-PARTIAL",
+          "page_found": true,
+          "fetch_error": null
+        },
+        {
+          "sku": "SKU-GROUP-A",
+          "page_found": true,
+          "fetch_error": null
+        },
+        {
+          "sku": "SKU-GROUP-B",
+          "page_found": true,
+          "fetch_error": null
+        },
+        {
+          "sku": "SKU-NOT-ON-PAGE",
+          "page_found": false,
+          "fetch_error": null
+        },
+        {
+          "sku": "SKU-UNFETCHABLE",
+          "page_found": false,
+          "fetch_error": "http_500"
+        }
+      ],
+      "mismatch_rate": 0.2
+    },
+    "fix_summary": "Feed product IDs don't map to the IDs used on-page/at checkout — an agent can't reliably match a feed listing to a purchasable item."
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "price_consistency_cross_surface",
+    "status": "fail",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 2,
+    "evidence_json": {
+      "sampled": [
+        {
+          "sku": "SKU-PASS",
+          "page_price": 19.99,
+          "feed_price": 19.99,
+          "consistent": true
+        },
+        {
+          "sku": "SKU-PARTIAL",
+          "page_price": 25,
+          "feed_price": 30,
+          "consistent": false
+        },
+        {
+          "sku": "SKU-GROUP-A",
+          "page_price": 10,
+          "feed_price": 10,
+          "consistent": true
+        },
+        {
+          "sku": "SKU-GROUP-B",
+          "page_price": 12,
+          "feed_price": 12,
+          "consistent": true
+        },
+        {
+          "sku": "SKU-NOT-ON-PAGE",
+          "page_price": null,
+          "feed_price": 5,
+          "consistent": null
+        },
+        {
+          "sku": "SKU-UNFETCHABLE",
+          "page_price": null,
+          "feed_price": 1,
+          "consistent": null
+        }
+      ],
+      "mismatch_rate": 0.25
+    },
+    "fix_summary": "Material price mismatches between the feed and the live page — an agent may quote or check out at the wrong price."
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "availability_consistency",
+    "status": "fail",
+    "weight": 1.5,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 2,
+    "evidence_json": {
+      "sampled": [
+        {
+          "sku": "SKU-PASS",
+          "page_availability": true,
+          "feed_availability": true,
+          "match": true
+        },
+        {
+          "sku": "SKU-PARTIAL",
+          "page_availability": true,
+          "feed_availability": false,
+          "match": false
+        },
+        {
+          "sku": "SKU-GROUP-A",
+          "page_availability": false,
+          "feed_availability": false,
+          "match": true
+        },
+        {
+          "sku": "SKU-GROUP-B",
+          "page_availability": true,
+          "feed_availability": true,
+          "match": true
+        },
+        {
+          "sku": "SKU-NOT-ON-PAGE",
+          "page_availability": null,
+          "feed_availability": true,
+          "match": null
+        },
+        {
+          "sku": "SKU-UNFETCHABLE",
+          "page_availability": null,
+          "feed_availability": true,
+          "match": null
+        }
+      ]
+    },
+    "fix_summary": "Feed and page disagree on stock status for most sampled products — an agent may recommend sold-out items or skip in-stock ones."
+  }
+]

@@ -41,9 +41,9 @@ const COMPLETE_DATA: RunBundleData = {
   createdAt: "2026-07-06T12:00:00.000Z",
   pillars: [{ pillar: "ucp", score: 84.46, signals_passed: 15, signals_total: 20 }],
   signals: [
-    { signal_key: "ucp_manifest_present", category: "discovery_manifest", status: "pass", weight: 3, priority_score: 7.5, fix_summary: null },
-    { signal_key: "capability_cart_declared", category: "capabilities", status: "fail", weight: 2, priority_score: 2.67, fix_summary: "Declare dev.ucp.shopping.cart in ucp.capabilities to support multi-item carts." },
-    { signal_key: "ucp_namespace_authority_valid", category: "discovery_manifest", status: "partial", weight: 1, priority_score: 9.0, fix_summary: "Some spec/schema URLs are not on the canonical UCP authority." },
+    { signal_key: "ucp_manifest_present", pillar: "ucp", category: "discovery_manifest", status: "pass", weight: 3, priority_score: 7.5, fix_summary: null, basis: null, merchant_note: null },
+    { signal_key: "capability_cart_declared", pillar: "ucp", category: "capabilities", status: "fail", weight: 2, priority_score: 2.67, fix_summary: "Declare dev.ucp.shopping.cart in ucp.capabilities to support multi-item carts.", basis: null, merchant_note: null },
+    { signal_key: "ucp_namespace_authority_valid", pillar: "ucp", category: "discovery_manifest", status: "partial", weight: 1, priority_score: 9.0, fix_summary: "Some spec/schema URLs are not on the canonical UCP authority.", basis: null, merchant_note: null },
   ],
   artifacts: [
     {
