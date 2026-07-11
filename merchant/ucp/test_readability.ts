@@ -423,7 +423,7 @@ const RICH_HTML_NOT_MATCHING_FEED = `<html><body><h1>Something Else Entirely</h1
     return null;
   });
 
-  const signals = await runReadabilityChecks({ rootUrl: "https://shop.example.com", fetcher, feedVariants: [], pageStates: [] });
+  const { signals, robots, parsedRobots, homepage } = await runReadabilityChecks({ rootUrl: "https://shop.example.com", fetcher, feedVariants: [], pageStates: [] });
   check("runReadabilityChecks: returns exactly 10 signals", signals.length === 10, signals.map((s) => s.signal_key));
   check("runReadabilityChecks: every signal is pillar agent_readability", signals.every((s) => s.pillar === "agent_readability"), signals);
   check(
@@ -444,6 +444,9 @@ const RICH_HTML_NOT_MATCHING_FEED = `<html><body><h1>Something Else Entirely</h1
   );
   const contentSignal = signals.find((s) => s.signal_key === "content_server_rendered")!;
   check("runReadabilityChecks: no-feed fallback sampling found the sitemap-discovered product page", contentSignal.status !== "not_applicable", contentSignal);
+  check("runReadabilityChecks: exposes the already-fetched robots state (for robotsPatchArtifact.ts to reuse)", robots.reachable === true && typeof robots.raw === "string", robots);
+  check("runReadabilityChecks: exposes the already-parsed robots groups", Array.isArray(parsedRobots.groups), parsedRobots);
+  check("runReadabilityChecks: exposes the already-fetched homepage state (for jsonldArtifact.ts to reuse)", homepage.reachable === true, homepage);
 }
 
 console.log(failures === 0 ? "\nAll readability tests passed." : `\n${failures} readability test(s) failed.`);

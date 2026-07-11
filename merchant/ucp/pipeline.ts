@@ -51,6 +51,7 @@ import {
   insertArtifacts,
   getSite,
   fetchRunBundleData,
+  fetchSignalEvidence,
   getRunDomain,
   ensureClient,
   upsertIntakeSite,
@@ -170,7 +171,12 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
       log(`llm:   sampled up to 5 of ${feed.items.length} feed products for title/description + attribute-richness checks`);
     }
     const policySignals = await runPolicyChecks(site.rootUrl ?? `https://${domain}`, httpFetcher);
-    const readabilitySignals = await runReadabilityChecks({
+    const {
+      signals: readabilitySignals,
+      robots: robotsState,
+      parsedRobots,
+      homepage: homepageState,
+    } = await runReadabilityChecks({
       rootUrl: site.rootUrl ?? `https://${domain}`,
       fetcher: httpFetcher,
       feedVariants,
@@ -201,6 +207,11 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
     const pillars = scorePillars(signals);
     const nPillars = await insertPillarScores(cfg, run.runId, pillars);
 
+    // One-time read, injected into ctx so the readability artifact generators
+    // (robotsPatchArtifact.ts, llmsTxtArtifact.ts, jsonldArtifact.ts) stay
+    // pure functions — never their own DB call.
+    const signalEvidence = await fetchSignalEvidence(cfg);
+
     const ctx: ArtifactContext = {
       manifest,
       feed,
@@ -209,6 +220,10 @@ export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
       llm,
       rootUrl: site.rootUrl ?? `https://${domain}`,
       platform: site.platform ?? undefined,
+      robots: robotsState,
+      parsedRobots,
+      homepage: homepageState,
+      signalEvidence,
     };
     const drafts = await runArtifacts(ctx);
     const insertedArtifacts = await insertArtifacts(cfg, run.runId, siteId, drafts, signalKeyToId);

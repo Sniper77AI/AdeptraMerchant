@@ -16,7 +16,7 @@
 
 import type { SignalRow, ManifestState } from "./manifestChecks.ts";
 import type { PillarScoreRow } from "./scorer.ts";
-import type { ArtifactDraft } from "./artifacts/index.ts";
+import type { ArtifactDraft, SignalEvidenceRow } from "./artifacts/index.ts";
 import type { RunBundleData } from "./export/reportBuilder.ts";
 
 export interface SupabaseConfig {
@@ -230,6 +230,16 @@ export async function getRunDomain(cfg: SupabaseConfig, runId: string): Promise<
   return rows[0]?.sites?.domain ?? null;
 }
 
+/** signal_evidence has no FK to signals (it's global reference data, keyed
+ *  by signal_key, not run-scoped). Standalone so both fetchRunBundleData
+ *  (report rendering) and pipeline.ts (artifact generation — injected into
+ *  ArtifactContext.signalEvidence so generators stay pure, never doing their
+ *  own DB read) can fetch it once each, from one query definition. */
+export async function fetchSignalEvidence(cfg: SupabaseConfig): Promise<Map<string, SignalEvidenceRow>> {
+  const rows = await rest<SignalEvidenceRow[]>(cfg, "GET", `/rest/v1/signal_evidence?select=signal_key,basis,merchant_note`);
+  return new Map(rows.map((e) => [e.signal_key, e]));
+}
+
 /** Returns null when run_id doesn't exist. Read-only — never mutates. */
 export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Promise<RunBundleData | null> {
   const runRows = await rest<
@@ -244,7 +254,7 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
   const run = runRows[0];
   if (!run) return null;
 
-  const [pillarRows, signalRows, artifactRows, evidenceRows] = await Promise.all([
+  const [pillarRows, signalRows, artifactRows, evidenceByKey] = await Promise.all([
     rest<Array<{ pillar: string; score: number; signals_passed: number; signals_total: number }>>(
       cfg,
       "GET",
@@ -262,20 +272,12 @@ export async function fetchRunBundleData(cfg: SupabaseConfig, runId: string): Pr
         resolves_signal_ids: string[] | null;
       }>
     >(cfg, "GET", `/rest/v1/artifacts?run_id=eq.${runId}&select=artifact_type,target_url,content,changelog_json,resolves_signal_ids`),
-    // signal_evidence has no FK to signals (it's global reference data, keyed
-    // by signal_key, not run-scoped) — no PostgREST embed is possible, so this
-    // is a separate query merged in below by signal_key. Looked up fresh here
-    // (not snapshotted onto the signals row) — basis is a fact about the
-    // state of external evidence, not a fact about the merchant's site at
-    // scan time, so every report render reflects the current evidence table.
-    rest<Array<{ signal_key: string; basis: string; merchant_note: string | null }>>(
-      cfg,
-      "GET",
-      `/rest/v1/signal_evidence?select=signal_key,basis,merchant_note`,
-    ),
+    // Looked up fresh here (not snapshotted onto the signals row) — basis is a
+    // fact about the state of external evidence, not a fact about the
+    // merchant's site at scan time, so every report render reflects the
+    // current evidence table.
+    fetchSignalEvidence(cfg),
   ]);
-
-  const evidenceByKey = new Map(evidenceRows.map((e) => [e.signal_key, e]));
 
   return {
     runId: run.id,

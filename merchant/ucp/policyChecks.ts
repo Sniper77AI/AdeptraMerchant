@@ -84,6 +84,14 @@ export interface HomepageState {
   reachable: boolean;
   httpStatus: number | null;
   blocks: any[];
+  // Raw HTML body, in-memory only — same discipline as pageChecks.ts's
+  // ProductPageState.rawHtml. Neither existing consumer of HomepageState
+  // (support_contact_present, organization_schema_present) ever puts blocks
+  // or html into evidence_json, so this is a zero-risk additive field.
+  // Consumed by artifacts/jsonldArtifact.ts to extract <title>/og:site_name
+  // for the Organization artifact — data no signal check ever extracted.
+  // NEVER persisted: must not appear in any evidence_json written to the DB.
+  rawHtml: string | null;
   errorNote?: string;
 }
 
@@ -91,11 +99,11 @@ export async function fetchHomepage(rootUrl: string, fetcher: Fetcher): Promise<
   try {
     const res = await fetcher(rootUrl, POLICY_FETCH_TIMEOUT_MS);
     if (res.status < 200 || res.status >= 300) {
-      return { reachable: true, httpStatus: res.status, blocks: [], errorNote: `http_${res.status}` };
+      return { reachable: true, httpStatus: res.status, blocks: [], rawHtml: null, errorNote: `http_${res.status}` };
     }
-    return { reachable: true, httpStatus: res.status, blocks: jsonLdBlocks(res.body) };
+    return { reachable: true, httpStatus: res.status, blocks: jsonLdBlocks(res.body), rawHtml: res.body };
   } catch (e) {
-    return { reachable: false, httpStatus: null, blocks: [], errorNote: `fetch_failed: ${(e as Error).message}` };
+    return { reachable: false, httpStatus: null, blocks: [], rawHtml: null, errorNote: `fetch_failed: ${(e as Error).message}` };
   }
 }
 

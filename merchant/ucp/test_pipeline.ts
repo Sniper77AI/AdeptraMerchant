@@ -263,6 +263,7 @@ function analysisHandlers(signalsStatus = 200): MockHandler[] {
       match: (u, m) => u.includes("/rest/v1/pillar_scores") && m === "POST",
       respond: (_u, init) => jsonResponse((JSON.parse(init.body as string) as unknown[]).map(() => ({}))),
     },
+    { match: (u, m) => u.includes("/rest/v1/signal_evidence") && m === "GET", respond: () => jsonResponse([]) },
     {
       match: (u, m) => u.includes("/rest/v1/artifacts") && m === "POST",
       respond: (_u, init) => {

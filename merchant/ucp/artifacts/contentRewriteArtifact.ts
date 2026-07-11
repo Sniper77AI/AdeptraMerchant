@@ -30,6 +30,17 @@
  * we can't verify. This intentionally over-rejects on ambiguous cases
  * (e.g. an incidental digit in a URL) — a false FLAG is safe; a false
  * acceptance of a fabricated fact is not.
+ *
+ * ALSO HANDLES three agent_readability flag-only signals (added alongside
+ * robotsPatchArtifact.ts/llmsTxtArtifact.ts/jsonldArtifact.ts — see README):
+ * content_server_rendered and schema_in_raw_html (no AI crawler executes
+ * JavaScript — moving to SSR/SSG/prerendering is an architectural change to
+ * the merchant's site, same posture as endpoint_reachability above) and
+ * sitemap_present (platform-keyed guidance, never a generated sitemap — a
+ * sitemap built from a partial crawl would misrepresent the site's real
+ * catalog). Reusing this generator rather than a fourth artifact type: it's
+ * already exactly "rich guidance, nothing auto-fixable," the same role it
+ * plays for title_description_consistency/discovery_attributes_enrichment.
  */
 
 import type { SignalRow, Fetcher } from "../manifestChecks.ts";
@@ -46,6 +57,41 @@ function byKey(signals: SignalRow[]): Map<string, SignalRow> {
 
 function needsAction(s: SignalRow | undefined): boolean {
   return s?.status === "fail" || s?.status === "partial";
+}
+
+// ---------------------------------------------------------------------------
+// sitemap_present guidance — independently verified against primary sources
+// (not assumed from platform reputation):
+//  - Shopify: "All Shopify stores automatically generate a sitemap.xml file"
+//    (help.shopify.com/en/manual/promoting-marketing/seo/find-site-map). No
+//    admin toggle exists to disable the whole file; individual pages/products
+//    can be excluded via a seo.hidden metafield. Google doesn't guarantee
+//    re-index timing after changes (Shopify's own page says so).
+//  - Wix: the real setting is "Let search engines index your site," under
+//    SEO & GEO -> Tools and settings -> SEO Settings
+//    (support.wix.com/en/article/enabling-search-engines-like-google-to-index-your-site).
+//    Hidden/non-indexable pages are omitted from the sitemap, not the whole
+//    file's generation.
+//  - WordPress/WooCommerce: core has shipped a native sitemap at
+//    /wp-sitemap.xml since version 5.5 (2020), automatically, no plugin
+//    required (make.wordpress.org/core/2020/07/22/new-xml-sitemaps-functionality-in-wordpress-5-5).
+//    "You need Yoast/Rank Math for a sitemap" is FALSE as a bare claim — the
+//    accurate framing is that Yoast/Rank Math REPLACE the core sitemap with a
+//    more capable one (image sitemaps, more control); Yoast's own plugin
+//    actively disables the core sitemap via the wp_sitemaps_enabled filter.
+// ---------------------------------------------------------------------------
+
+function sitemapGuidanceFor(platform: string | undefined): string {
+  switch (platform) {
+    case "shopify":
+      return "Shopify auto-generates /sitemap.xml for every store — there's no admin toggle to disable the whole file (individual pages/products can be excluded via the seo.hidden metafield). Verify robots.txt isn't blocking it, and note Google doesn't guarantee re-index timing after changes.";
+    case "wix":
+      return 'Wix auto-generates a sitemap, but non-indexable pages are omitted from it. Check "Let search engines index your site" under SEO & GEO → Tools and settings → SEO Settings.';
+    case "woocommerce":
+      return "WordPress core has auto-generated a basic sitemap at /wp-sitemap.xml since version 5.5 (2020) — verify it isn't disabled. Yoast SEO or Rank Math replace it with a more capable one (image sitemaps, more configuration) if you want that; note that installing Yoast specifically disables the core sitemap in favor of its own.";
+    default:
+      return "Your sitemap must be generated from your own catalog data — Adeptra will not generate one from a partial crawl; a sitemap missing most of your catalog would tell crawlers \"these are all my pages\" while omitting most of them, a false claim dressed as a fix. See the README's Open Items for a planned sitemap-builder script for custom stores.";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +411,38 @@ export async function generateContentRewriteArtifact(ctx: ArtifactContext): Prom
     const missing = (discoveryAttrs!.evidence_json as any)?.missing_attribute_types;
     const missingList = Array.isArray(missing) && missing.length > 0 ? missing.join(", ") : "see evidence for details";
     changelog.flagged.push(`Sparse product attribute coverage — consider adding: ${missingList}. Adeptra does not invent product facts or attribute values.`);
+  }
+
+  // --- agent_readability flag-only signals: content_server_rendered /
+  // schema_in_raw_html / sitemap_present. No artifact can honestly fix any of
+  // these — see this file's header for why. Reusing content_rewrite rather
+  // than a fourth new artifact type: this IS already the "rich guidance,
+  // nothing auto-fixable" artifact, exactly its purpose for title_desc/
+  // discovery_attrs above.
+  const contentServerRendered = sig.get("content_server_rendered");
+  const schemaInRawHtml = sig.get("schema_in_raw_html");
+  const sitemapPresent = sig.get("sitemap_present");
+
+  // content_server_rendered / schema_in_raw_html: same root cause (no major AI
+  // crawler executes JavaScript — see readabilityChecks.ts). Moving to SSR/SSG/
+  // prerendering is an architectural change to the merchant's own site;
+  // Adeptra cannot generate it. Same honest posture as endpoint_reachability.
+  if (needsAction(contentServerRendered)) {
+    changelog.flagged.push(
+      "Product content is client-side-rendered, which makes it invisible to ChatGPT, Claude, and Perplexity's crawlers — none of them execute JavaScript — even while the same pages rank normally on Google, which does render JS. This is an architectural property of your site; Adeptra cannot generate a fix for it. Look at server-side rendering (SSR), static site generation (SSG), or prerendering for your product pages.",
+    );
+  }
+  if (needsAction(schemaInRawHtml)) {
+    changelog.flagged.push(
+      "Structured data (JSON-LD) that your site injects via client-side JavaScript is invisible to AI crawlers for the same reason as the content-rendering issue above — they never execute the script that adds it. Adeptra cannot generate a fix for how your site renders; the underlying structured data itself may already be correct, it just needs to be present in the RAW HTML response, not injected after load.",
+    );
+  }
+
+  // sitemap_present: platform-keyed guidance, never a generated sitemap — a
+  // sitemap built from Adeptra's own partial crawl would tell crawlers "these
+  // are my pages" while omitting most of them, a false claim dressed as a fix.
+  if (needsAction(sitemapPresent)) {
+    changelog.flagged.push(sitemapGuidanceFor(ctx.platform));
   }
 
   if (markdownSections.length === 0 && changelog.flagged.length === 0) return null;

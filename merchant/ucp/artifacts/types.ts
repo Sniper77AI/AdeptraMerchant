@@ -11,9 +11,20 @@
 import type { ManifestState, SignalRow, Fetcher } from "../manifestChecks.ts";
 import type { FeedState } from "../feedChecks.ts";
 import type { LlmClient } from "../llmChecks.ts";
+import type { RobotsTxtState, ParsedRobots } from "../readabilityChecks.ts";
+import type { HomepageState } from "../policyChecks.ts";
 
 /** Union, extensible — each generator still returns one literal member of this. */
-export type ArtifactType = "ucp_manifest" | "feed_fix" | "content_rewrite" | "mcp_scaffold";
+export type ArtifactType = "ucp_manifest" | "feed_fix" | "content_rewrite" | "mcp_scaffold" | "robots_patch" | "llms_txt" | "jsonld";
+
+/** signal_evidence row shape — defined here (not imported from
+ *  supabaseSink.ts) to avoid a types.ts -> supabaseSink.ts -> artifacts/
+ *  index.ts -> types.ts type cycle; supabaseSink.ts imports this one back. */
+export interface SignalEvidenceRow {
+  signal_key: string;
+  basis: string;
+  merchant_note: string | null;
+}
 
 export interface ArtifactChangelog {
   added: string[];
@@ -45,6 +56,18 @@ export interface ArtifactContext {
   // generators (mcpScaffoldArtifact.ts) return null when this doesn't match,
   // rather than generating a scaffold for a platform that hasn't been confirmed.
   platform?: string;
+  // Already-fetched agent_readability state (readabilityChecks.ts's
+  // runReadabilityChecks), for robotsPatchArtifact.ts / jsonldArtifact.ts —
+  // never re-fetched. Optional: absent when a run's manifest/feed checks ran
+  // but readability checks didn't (shouldn't happen via pipeline.ts today,
+  // but keeps this context type honest about what's guaranteed).
+  robots?: RobotsTxtState;
+  parsedRobots?: ParsedRobots;
+  homepage?: HomepageState;
+  // signal_evidence rows, fetched ONCE by pipeline.ts and injected here — the
+  // one DB read every new readability-artifact generator needs (merchant_note
+  // text), kept out of the generators themselves so they stay pure functions.
+  signalEvidence?: Map<string, SignalEvidenceRow>;
 }
 
 // ---------------------------------------------------------------------------

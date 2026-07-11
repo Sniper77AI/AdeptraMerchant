@@ -54,17 +54,29 @@ const LLMS_TXT_MIN_LENGTH = 20; // below this, treat as an empty/placeholder fil
  *  rather than a silent magic number. */
 export const CONTENT_BODY_TEXT_THRESHOLD = 200;
 
+// RECONCILED 2026-07-10 against the original Build 1 spec table — six signals'
+// weight and/or impact/effort had drifted from spec during implementation
+// (caught live: robots_txt_valid was scoring at weight 1.5, not the spec's 1.0).
+// A full audit found five more: ai_crawler_access_retrieval (w 2.0->2.5, i 4->5,
+// e 2->1), schema_in_raw_html (w 2.5->2.0, i 5->4), offer_schema_complete
+// (w 2.0->1.5), organization_schema_present (w 1.5->1.0, e 1->2), sitemap_present
+// (w 1.5->1.0, i 3->2), llms_txt_present (i 2->1). ai_crawler_access_training,
+// content_server_rendered, and product_schema_present already matched spec.
+// Fixed going forward only — analysis_runs are immutable, so every run scored
+// before this date used the old (wrong) values and is left exactly as reported;
+// do not compare a pre-2026-07-10 agent_readability score against one after.
+// See README for the full before/after table.
 const W = {
-  robotsValid: { weight: 1.5, impact: 3, effort: 1 },
-  crawlerRetrieval: { weight: 2.0, impact: 4, effort: 2 },
+  robotsValid: { weight: 1.0, impact: 3, effort: 1 },
+  crawlerRetrieval: { weight: 2.5, impact: 5, effort: 1 },
   crawlerTraining: { weight: 1.0, impact: 2, effort: 1 },
   contentServerRendered: { weight: 3.0, impact: 5, effort: 4 },
-  schemaInRawHtml: { weight: 2.5, impact: 5, effort: 3 },
+  schemaInRawHtml: { weight: 2.0, impact: 4, effort: 3 },
   productSchema: { weight: 2.0, impact: 4, effort: 2 },
-  offerSchema: { weight: 2.0, impact: 4, effort: 2 },
-  organizationSchema: { weight: 1.5, impact: 3, effort: 1 },
-  sitemapPresent: { weight: 1.5, impact: 3, effort: 1 },
-  llmsTxt: { weight: 0.5, impact: 2, effort: 1 },
+  offerSchema: { weight: 1.5, impact: 4, effort: 2 },
+  organizationSchema: { weight: 1.0, impact: 3, effort: 2 },
+  sitemapPresent: { weight: 1.0, impact: 2, effort: 1 },
+  llmsTxt: { weight: 0.5, impact: 1, effort: 1 },
 } as const;
 
 function contribution(weight: number, status: SignalRow["status"]): number {
@@ -80,6 +92,12 @@ function contribution(weight: number, status: SignalRow["status"]): number {
 export interface RobotsRule {
   type: "allow" | "disallow";
   path: string;
+  // 1-indexed line number in the raw robots.txt text. Purely additive — no
+  // existing evidence_json serializes RobotsRule objects directly (both
+  // robots_txt_valid and ai_crawler_access_retrieval only derive counts/
+  // booleans), so this is invisible to every persisted signal shape. Used by
+  // artifacts/robotsPatchArtifact.ts to name the exact line to remove.
+  line: number;
 }
 
 export interface RobotsGroup {
@@ -122,8 +140,10 @@ export function parseRobotsTxt(text: string): ParsedRobots {
   let current: RobotsGroup | null = null;
   let awaitingNewGroup = true;
 
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.split("#")[0].trim();
+  const rawLines = text.split(/\r?\n/);
+  for (let i = 0; i < rawLines.length; i++) {
+    const lineNumber = i + 1; // 1-indexed, matches how a merchant's editor shows lines
+    const line = rawLines[i].split("#")[0].trim();
     if (!line) continue;
     const idx = line.indexOf(":");
     if (idx === -1) continue;
@@ -140,7 +160,7 @@ export function parseRobotsTxt(text: string): ParsedRobots {
       }
     } else if (field === "allow" || field === "disallow") {
       if (current) {
-        current.rules.push({ type: field, path: value });
+        current.rules.push({ type: field, path: value, line: lineNumber });
         awaitingNewGroup = true;
       }
     } else if (field === "sitemap") {
@@ -150,7 +170,11 @@ export function parseRobotsTxt(text: string): ParsedRobots {
   return { groups, sitemaps };
 }
 
-function findGroupForToken(groups: RobotsGroup[], token: string): RobotsGroup | undefined {
+/** Exported for artifacts/robotsPatchArtifact.ts: it needs to know whether a
+ *  bot's blocking rule came from a bot-specific group or the shared wildcard
+ *  group, to decide whether removing that rule is safely scoped to one bot
+ *  or would affect every other crawler too. */
+export function findGroupForToken(groups: RobotsGroup[], token: string): RobotsGroup | undefined {
   const lower = token.toLowerCase();
   return (
     groups.find((g) => g.userAgents.some((ua) => ua.toLowerCase() === lower)) ??
@@ -161,12 +185,15 @@ function findGroupForToken(groups: RobotsGroup[], token: string): RobotsGroup | 
 /** Longest-matching-rule-wins against `path` (default site root); on a tie
  *  in path length, Allow wins (the documented least-restrictive-wins tie-
  *  break). No rules at all for this token (no specific block, no wildcard
- *  block) => allowed, matching real crawler behavior for a missing/silent
+ *  block) => null, matching real crawler behavior for a missing/silent
  *  robots.txt. An empty `Disallow:` value is a documented no-op ("disallow
- *  nothing"), not a block. */
-export function isUserAgentBlocked(parsed: ParsedRobots, token: string, path = "/"): boolean {
+ *  nothing"), not a block. Returns the winning RULE (with its line number),
+ *  not just a boolean — artifacts/robotsPatchArtifact.ts needs the exact
+ *  line to name for removal; isUserAgentBlocked is a thin wrapper for the
+ *  many callers that only need the boolean. */
+export function findBlockingRule(parsed: ParsedRobots, token: string, path = "/"): RobotsRule | null {
   const group = findGroupForToken(parsed.groups, token);
-  if (!group || group.rules.length === 0) return false;
+  if (!group || group.rules.length === 0) return null;
   let best: RobotsRule | null = null;
   for (const rule of group.rules) {
     if (rule.type === "disallow" && rule.path === "") continue;
@@ -176,7 +203,11 @@ export function isUserAgentBlocked(parsed: ParsedRobots, token: string, path = "
       }
     }
   }
-  return best?.type === "disallow";
+  return best?.type === "disallow" ? best : null;
+}
+
+export function isUserAgentBlocked(parsed: ParsedRobots, token: string, path = "/"): boolean {
+  return findBlockingRule(parsed, token, path) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -784,7 +815,19 @@ export interface ReadabilityInput {
   opts?: { aiTrainingOptOut?: boolean };
 }
 
-export async function runReadabilityChecks(input: ReadabilityInput): Promise<SignalRow[]> {
+/** signals: the ten agent_readability signals. robots/parsedRobots/homepage:
+ *  the already-fetched state artifacts/robotsPatchArtifact.ts and
+ *  artifacts/jsonldArtifact.ts need, exposed so those generators never
+ *  re-fetch what this orchestrator already got — same reuse discipline as
+ *  pageChecks.ts's pageStates exposure. */
+export interface ReadabilityResult {
+  signals: SignalRow[];
+  robots: RobotsTxtState;
+  parsedRobots: ParsedRobots;
+  homepage: HomepageState;
+}
+
+export async function runReadabilityChecks(input: ReadabilityInput): Promise<ReadabilityResult> {
   const { rootUrl, fetcher, feedVariants, opts } = input;
 
   const robots = await fetchRobotsTxt(rootUrl, fetcher);
@@ -802,16 +845,21 @@ export async function runReadabilityChecks(input: ReadabilityInput): Promise<Sig
     pageStates = await sampleFallbackProductPages(locs, fetcher);
   }
 
-  return [
-    sig_robots_txt_valid(robots, parsed),
-    sig_ai_crawler_access_retrieval(parsed),
-    sig_ai_crawler_access_training(parsed, opts),
-    sig_content_server_rendered(pageStates, feedVariants),
-    sig_schema_in_raw_html(pageStates),
-    sig_product_schema_present(pageStates),
-    sig_offer_schema_complete(pageStates),
-    sig_organization_schema_present(homepage),
-    sig_sitemap_present(sitemap),
-    sig_llms_txt_present(llmsTxt),
-  ];
+  return {
+    signals: [
+      sig_robots_txt_valid(robots, parsed),
+      sig_ai_crawler_access_retrieval(parsed),
+      sig_ai_crawler_access_training(parsed, opts),
+      sig_content_server_rendered(pageStates, feedVariants),
+      sig_schema_in_raw_html(pageStates),
+      sig_product_schema_present(pageStates),
+      sig_offer_schema_complete(pageStates),
+      sig_organization_schema_present(homepage),
+      sig_sitemap_present(sitemap),
+      sig_llms_txt_present(llmsTxt),
+    ],
+    robots,
+    parsedRobots: parsed,
+    homepage,
+  };
 }

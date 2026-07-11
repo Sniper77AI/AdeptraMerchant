@@ -139,7 +139,11 @@ merchant/
                            # (allNumbersGrounded) that rejects the WHOLE generation if any number
                            # in the output isn't traceable to the source page text.
                            # @context/@type are injected deterministically after parsing (never
-                           # trusted to the model) so the output is always valid standalone JSON-LD
+                           # trusted to the model) so the output is always valid standalone JSON-LD.
+                           # ALSO handles three agent_readability flag-only signals (content_server_
+                           # rendered, schema_in_raw_html, sitemap_present — platform-keyed guidance) —
+                           # reused rather than a fourth new artifact type, since this generator
+                           # already IS "rich guidance, nothing auto-fixable"
       mcpScaffoldArtifact.ts # Artifact #4 — pure generator for artifact_type='mcp_scaffold'. SPINE:
                            # owns platform dispatch (PLATFORM_PROVIDERS keyed by ctx.platform — an
                            # onboarding-declared fact, sites.platform, never guessed), the
@@ -227,11 +231,38 @@ merchant/
                            # list of remaining stubs, and the server starts cleanly once all eight are
                            # done. resolves_signal_keys is always empty here too, even more clearly
                            # than the other providers.
-      index.ts             # runArtifacts(ctx) orchestrator — async (awaits each generator so the
-                           # sync manifest/feed/mcp_scaffold generators and the async content_rewrite
-                           # generator share one call site); sibling modules (jsonld, llms_txt,
-                           # robots_patch) get added here later, without touching this file's
-                           # signature again
+      robotsPatchArtifact.ts # Artifact #5 — pure generator for artifact_type='robots_patch'. A PATCH,
+                           # never a wholesale robots.txt rewrite — missing file gets a complete minimal
+                           # file (safe, nothing to preserve); an existing file gets plain-English,
+                           # line-numbered REMOVE/ADD instructions written as `#` comments (valid, inert
+                           # robots.txt syntax even if deployed as-is). Wildcard-safe: never proposes
+                           # removing a `User-agent: *` rule shared with other crawlers, adds a
+                           # bot-specific Allow override instead. Never touches GPTBot/ClaudeBot training
+                           # directives (merchant-intent rule, third application) — flags the choice,
+                           # presents both sides, lets the merchant decide.
+      llmsTxtArtifact.ts    # Artifact #6 — pure generator for artifact_type='llms_txt'. Built only from
+                           # data already known real: <title>/og:site_name + og:description extracted
+                           # from the homepage's raw HTML (extractSiteName/extractSiteDescription,
+                           # reused by jsonldArtifact.ts), policy page URLs policyChecks.ts already
+                           # found, the configured feed URL, the resolved UCP manifest URL. No
+                           # description ever invented — an obvious placeholder + must_complete when
+                           # none is extractable. The mandatory contested-basis honesty note is read
+                           # from signal_evidence.merchant_note at generation time, not hardcoded.
+      jsonldArtifact.ts     # Artifact #7 — pure generator for artifact_type='jsonld'. Two sub-cases,
+                           # deliberately different honesty properties: organization_schema_present is
+                           # a complete sitewide fix (real domain + extracted name); product_schema_
+                           # present/offer_schema_complete are explicitly NOT a complete fix (a sampled-
+                           # page template + one real worked example from feed data, resolving neither
+                           # signal — a real catalog has far more products than Adeptra samples). Hard
+                           # rule: if the feed and live pages disagree on price/availability/product ID,
+                           # NO product/offer JSON-LD is generated at all — flagged instead, same
+                           # reconcile-don't-guess discipline as feedArtifact.ts. Platform-specific
+                           # injection guidance (Shopify/WooCommerce) independently verified against
+                           # primary sources before shipping as merchant-facing copy.
+      index.ts             # runArtifacts(ctx) orchestrator — async (awaits each generator so the six
+                           # sync generators and the async content_rewrite generator share one call
+                           # site). Seven generators today: ucp_manifest, feed_fix, content_rewrite,
+                           # mcp_scaffold, robots_patch, llms_txt, jsonld
     supabaseSink.ts        # PostgREST via plain fetch (no supabase-js): run lifecycle, signal
                            # insert (returns inserted rows for signal_key→id mapping;
                            # priority_score is DB-generated), pillar score insert, artifact insert
@@ -381,6 +412,17 @@ merchant/
                            # sitemap-index-follow + product-path-filtering fallback sampling, and a
                            # dedicated no-persist guardrail asserting no signal's evidence_json ever
                            # contains a full HTML document
+    test_readabilityArtifacts.ts # robots_patch/llms_txt/jsonld + the three flag-only signals folded
+                           # into content_rewrite (58 assertions): missing-vs-existing robots.txt modes,
+                           # exact-line-removal with unrelated rules provably untouched, the wildcard-
+                           # safety override-group behavior, GPTBot/ClaudeBot never auto-unblocked
+                           # (opted out or not), llms.txt built from real policy/feed/manifest URLs with
+                           # a placeholder (never invented) description, the contested-basis note
+                           # proven to come from signalEvidence (not hardcoded) via a distinctive mock
+                           # string, jsonld/organization resolving the signal vs. jsonld/product
+                           # resolving nothing, the price-disagreement hazard gate (asserts zero Offer/
+                           # Product blocks in content when feed and pages disagree), and sitemap
+                           # guidance matching sites.platform
     test_pageChecks_golden.ts # Golden-fixture regression lock for pageChecks.ts's three UCP page-
                            # consistency signals, captured BEFORE the rawHtml/pageStates signature
                            # change (added so agent_readability's content-legibility signals could
@@ -963,8 +1005,116 @@ live-verified against two real stores (skims.com, gymshark.com). A second, indep
       real skims.com site (`52d663c9…`, no feed configured): the report/form/CLI all show two labeled
       pillar scores with no composite anywhere, seven Category-2 signals correctly `not_applicable`
       (no feed to check against), and `analysis_runs.overall_score` stayed `NULL` on the new row.
+- [x] **agent_readability signal weight/impact/effort reconciliation (2026-07-10).** Found live:
+      `robots_txt_valid` was scoring at weight `1.5`, not the `1.0` the original Build 1 spec table
+      specified — two runs had already been scored under the wrong value. A full audit of all ten
+      signals against the original spec table (pulled from the pre-compaction session transcript,
+      since the running conversation's summary hadn't preserved the literal numbers) found five more
+      with drift, seven signals affected in total — only `ai_crawler_access_training`,
+      `content_server_rendered`, and `product_schema_present` matched spec exactly:
+
+      | signal | weight: spec → was | impact: spec → was | effort: spec → was |
+      |---|---|---|---|
+      | `robots_txt_valid` | 1.0 → 1.5 | 3 (match) | 1 (match) |
+      | `ai_crawler_access_retrieval` | 2.5 → 2.0 | 5 → 4 | 1 → 2 |
+      | `schema_in_raw_html` | 2.0 → 2.5 | 4 → 5 | 3 (match) |
+      | `offer_schema_complete` | 1.5 → 2.0 | 4 (match) | 2 (match) |
+      | `organization_schema_present` | 1.0 → 1.5 | 3 (match) | 2 → 1 |
+      | `sitemap_present` | 1.0 → 1.5 | 2 → 3 | 1 (match) |
+      | `llms_txt_present` | 0.5 (match) | 1 → 2 | 1 (match) |
+
+      Weight drift is score-distorting — it feeds `score_contribution` and therefore the pillar
+      percentage directly. Impact/effort drift only distorts `priority_score` (a DB-generated column,
+      `impact × weight ÷ effort`, used for "what to fix first" ordering) — real, but a different kind
+      of wrong. Fixed in `readabilityChecks.ts`'s `W` table, going forward only, same discipline as
+      the `overall_score` deprecation above: **no historical run is rewritten.** `analysis_runs` are
+      immutable — every agent_readability score reported before 2026-07-10, including the skims.com
+      figures cited in the composite-score-removal entry above, was correct for the code that existed
+      when that run executed and stays exactly as reported. Do not compare a pre-2026-07-10
+      agent_readability score against a post-2026-07-10 one; the weights underneath changed.
+- [x] **agent_readability fix artifacts (Build 2, 2026-07-10): `robots_patch`, `llms_txt`, `jsonld`.**
+      Three new generators, following the same honesty discipline `manifestArtifact.ts`/
+      `contentRewriteArtifact.ts` already established, with two genuinely different honesty shapes:
+      - `robots_patch` — a PATCH, never a wholesale rewrite (an existing robots.txt may have rules this
+        codebase doesn't recognize — admin paths, crawl-delay). Missing file -> a complete minimal file
+        (safe, nothing to preserve). Existing file -> plain-English, line-numbered REMOVE/ADD
+        instructions written as `#` comments, so the content is valid (inert) robots.txt syntax even if
+        a merchant panics and deploys it as-is — worst case is harmless comments, never a silently
+        broken file. **Wildcard-safety**: when a retrieval bot is blocked via `User-agent: *` (shared
+        with every other crawler), the generator never proposes removing that rule — it adds a
+        bot-specific `Allow` override group instead, which takes precedence over the wildcard without
+        touching a rule that governs unrelated crawlers too. **Merchant-intent rule, third application**
+        (after `identity_linking_opt_out`/`checkout_handoff_opt_in`): GPTBot/ClaudeBot training-bot
+        directives are NEVER added or removed — blocking them is a legitimate IP decision. Opted out ->
+        say so, touch nothing; not opted out but blocked -> flag it, present both sides (blocking
+        training doesn't affect citation eligibility, which the retrieval bots above govern
+        separately), let the merchant decide.
+      - `llms_txt` — generated only from data this codebase already knows is real: `<title>`/
+        `og:site_name` and `og:description`/meta description extracted from the homepage's raw HTML
+        (a new, additive `HomepageState.rawHtml` field, same in-memory-only discipline as
+        `ProductPageState.rawHtml`), policy page URLs `policyChecks.ts` already found, the configured
+        feed URL, the resolved UCP manifest URL. No description ever invented — an obvious placeholder
+        plus a `must_complete` entry when none is extractable. The mandatory contested-basis honesty
+        note is read from `signal_evidence.merchant_note` at generation time, not hardcoded, so a
+        future evidence correction updates the artifact too.
+      - `jsonld` — two sub-cases with deliberately different honesty properties in one draft.
+        `organization_schema_present` is a complete, sitewide fix (one Organization block, real
+        domain + extracted name). `product_schema_present`/`offer_schema_complete` are explicitly NOT a
+        complete fix — Adeptra samples a handful of pages, a real catalog has many more — so the
+        artifact is a field-mapping template plus ONE worked example from real feed data, resolving
+        NEITHER signal. **Hard rule**: if the feed and live pages disagree
+        (`price_consistency_cross_surface`/`availability_consistency`/`product_id_consistency` fail or
+        partial), NO product/offer JSON-LD is generated at all — publishing feed-sourced markup would
+        contradict the merchant's own pages; flagged instead, same reconcile-don't-guess discipline as
+        `feedArtifact.ts`. Platform-specific injection guidance (Shopify/WooCommerce) is independently
+        verified against primary sources before shipping as merchant-facing copy, not assumed: Shopify's
+        official `| structured_data` Liquid filter already ships Product schema in most 2.0-era themes
+        (Dawn included); WooCommerce core already emits basic Product/Offer JSON-LD by default via its
+        `WC_Structured_Data` class — Rank Math's free tier extends it, Yoast SEO does NOT cover
+        WooCommerce products without a separate paid add-on. The guidance tells merchants to check
+        first rather than presuming nothing exists.
+      - Three further agent_readability signals (`content_server_rendered`, `schema_in_raw_html`,
+        `sitemap_present`) get no artifact at all — folded into the existing `content_rewrite`
+        generator as flag-only entries (it already IS the "rich guidance, nothing auto-fixable"
+        artifact type) rather than inventing a fourth new file. The first two: no AI crawler executes
+        JavaScript, so moving to SSR/SSG/prerendering is an architectural change to the merchant's own
+        site that Adeptra cannot generate — same honest posture as `endpoint_reachability`. The third:
+        platform-keyed guidance (Shopify auto-generates and can't be fully disabled; Wix gates on its
+        "Let search engines index your site" setting; WordPress core auto-generates a basic sitemap
+        since 5.5 (2020), Yoast/Rank Math replace rather than being required), never a sitemap
+        generated from Adeptra's own partial crawl — an incomplete sitemap would tell crawlers "these
+        are all my pages" while omitting most of them, a false claim dressed as a fix.
+      Architecture: `ArtifactContext` gained `robots`/`parsedRobots`/`homepage` (already-fetched by
+      `readabilityChecks.ts`'s `runReadabilityChecks`, now exposed rather than discarded — same reuse
+      discipline as `pageChecks.ts`'s `pageStates`) and `signalEvidence` (fetched once by `pipeline.ts`
+      via a new standalone `fetchSignalEvidence()`, extracted from `fetchRunBundleData`'s existing
+      inline query, and injected — keeps every new generator a pure function, never its own DB read).
+      `RobotsRule` gained a `line` number (purely additive — no existing evidence_json serializes raw
+      rule objects, so this is invisible to every persisted signal shape); `isUserAgentBlocked` now
+      delegates to a new `findBlockingRule` that returns the winning rule, not just a boolean.
+      Tested: 58 mock-driven assertions (`test_readabilityArtifacts.ts`) covering every honesty rule
+      above, including the wildcard-safety and price-disagreement-hazard branches. Full existing suite
+      and both golden fixtures (UCP page-consistency signals; the four pre-existing generators) stayed
+      green and byte-identical throughout. Live-verified against skims.com and gymshark.com: both
+      already pass 9/10 agent_readability signals for real (only `llms_txt_present` fails on either),
+      so both live runs exercised the `llms_txt` generator specifically — the exported bundle's
+      `llms.txt` correctly extracted skims.com's real `<title>` ("SKIMS | Solutions For Every Body")
+      and real meta description, with real return/shipping-policy, feed, and manifest URLs, no invented
+      content anywhere, and the contested-basis note rendered identically in both the signal's own
+      report disclosure and the artifact's changelog (confirming it's sourced from the same
+      `signal_evidence` row, not duplicated text). `robots_patch`/`jsonld`'s generation paths are
+      covered by the mock suite's 58 assertions rather than a live run, since neither real store
+      currently has a failing signal that path addresses.
 
 ### Open items / known shortcuts
+
+- **A sitemap-builder SCRIPT for custom/no-platform stores** (deferred from the `robots_patch`/
+  `llms_txt`/`jsonld` build, 2026-07-10). `sitemap_present` never gets a generated sitemap from
+  Adeptra's own partial crawl — an incomplete one would misrepresent the site's real catalog (see the
+  Status entry above). The honest alternative: a generator SCRIPT, following the same pattern as the
+  Custom `mcp_scaffold` provider's `StoreAdapter` reference implementation — the merchant (or their
+  developer) runs it against their OWN real catalog data, so its output is complete and re-runnable,
+  not a one-time partial snapshot from a crawl. Not built yet.
 
 - **A single domain can have multiple `sites` rows across clients — `domain` is
   NOT a stable identity for cross-run history (found 2026-07-10, while
