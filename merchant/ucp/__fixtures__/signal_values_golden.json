@@ -1,0 +1,642 @@
+[
+  {
+    "pillar": "agent_readability",
+    "category": "crawler_access",
+    "signal_key": "ai_crawler_access_retrieval",
+    "status": "pass",
+    "weight": 2.5,
+    "score_contribution": 2.5,
+    "impact": 5,
+    "effort": 1,
+    "evidence_json": {
+      "checked": [
+        {
+          "bot": "OAI-SearchBot",
+          "blocked": false
+        },
+        {
+          "bot": "Claude-SearchBot",
+          "blocked": false
+        },
+        {
+          "bot": "PerplexityBot",
+          "blocked": false
+        }
+      ],
+      "blocked_count": 0,
+      "total": 3
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "crawler_access",
+    "signal_key": "ai_crawler_access_training",
+    "status": "pass",
+    "weight": 1,
+    "score_contribution": 1,
+    "impact": 2,
+    "effort": 1,
+    "evidence_json": {
+      "checked": [
+        {
+          "bot": "GPTBot",
+          "blocked": false
+        },
+        {
+          "bot": "ClaudeBot",
+          "blocked": false
+        }
+      ],
+      "blocked_count": 0,
+      "total": 2,
+      "ai_training_opt_out": false
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "payment_ap2_readiness",
+    "signal_key": "ap2_compatibility_declared",
+    "status": "partial",
+    "weight": 2.5,
+    "score_contribution": 1.25,
+    "impact": 4,
+    "effort": 4,
+    "evidence_json": {
+      "payment_handlers": [
+        "com.google.pay"
+      ],
+      "ap2_declared": false,
+      "external_gate": true
+    },
+    "fix_summary": "Payment handler(s) declared, but AP2 (Agent Payments Protocol) compatibility isn't explicitly indicated."
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "availability_consistency",
+    "status": "not_applicable",
+    "weight": 1.5,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 2,
+    "evidence_json": {
+      "sampled": []
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "capabilities",
+    "signal_key": "capability_cart_declared",
+    "status": "pass",
+    "weight": 2,
+    "score_contribution": 2,
+    "impact": 4,
+    "effort": 3,
+    "evidence_json": {
+      "declared": true,
+      "config": {
+        "version": "2026-04-08",
+        "spec": "https://ucp.dev/specification/cart",
+        "schema": "https://ucp.dev/2026-04-08/schemas/shopping/cart.json"
+      }
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "capabilities",
+    "signal_key": "capability_catalog_declared",
+    "status": "pass",
+    "weight": 2,
+    "score_contribution": 2,
+    "impact": 4,
+    "effort": 3,
+    "evidence_json": {
+      "declared": true,
+      "matched_keys": [
+        "dev.ucp.shopping.catalog"
+      ]
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "capabilities",
+    "signal_key": "capability_checkout_declared",
+    "status": "pass",
+    "weight": 2.5,
+    "score_contribution": 2.5,
+    "impact": 5,
+    "effort": 3,
+    "evidence_json": {
+      "declared": true,
+      "version": "2026-04-08",
+      "schema_present": true,
+      "checkout_handoff_opt_in": false
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "capabilities",
+    "signal_key": "capability_fulfillment_declared",
+    "status": "pass",
+    "weight": 1.5,
+    "score_contribution": 1.5,
+    "impact": 3,
+    "effort": 3,
+    "evidence_json": {
+      "declared": true,
+      "version": "2026-04-08",
+      "schema_present": true
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "capabilities",
+    "signal_key": "capability_identity_linking_declared",
+    "status": "pass",
+    "weight": 1,
+    "score_contribution": 1,
+    "impact": 2,
+    "effort": 3,
+    "evidence_json": {
+      "declared": true,
+      "scopes": [
+        "dev.ucp.shopping.order:read"
+      ],
+      "opted_out": false
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "content_legibility",
+    "signal_key": "content_server_rendered",
+    "status": "not_applicable",
+    "weight": 3,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 4,
+    "evidence_json": {
+      "sampled": 0,
+      "body_text_threshold": 200,
+      "reason": "no product pages could be sampled"
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "payment_ap2_readiness",
+    "signal_key": "credential_security_posture",
+    "status": "pass",
+    "weight": 2,
+    "score_contribution": 2,
+    "impact": 3,
+    "effort": 4,
+    "evidence_json": {
+      "tokenization_referenced": true,
+      "external_gate": true,
+      "observable": true
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "discovery_attributes_enrichment",
+    "status": "not_applicable",
+    "weight": 1,
+    "score_contribution": 0,
+    "impact": 3,
+    "effort": 3,
+    "evidence_json": {
+      "coverage_score": null,
+      "missing_attribute_types": []
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "capabilities",
+    "signal_key": "endpoint_reachability",
+    "status": "pass",
+    "weight": 2,
+    "score_contribution": 2,
+    "impact": 4,
+    "effort": 3,
+    "evidence_json": {
+      "endpoint": "https://shop.example.com/ucp/v1",
+      "http_status": 200,
+      "notes": ""
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "feed_available",
+    "status": "pass",
+    "weight": 2,
+    "score_contribution": 2,
+    "impact": 5,
+    "effort": 2,
+    "evidence_json": {
+      "feed_url": "https://shop.example.com/products.json",
+      "reachable": true,
+      "http_status": 200,
+      "format": "shopify_json",
+      "item_count": 1,
+      "error_note": null
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "discovery_surfaces",
+    "signal_key": "llms_txt_present",
+    "status": "fail",
+    "weight": 0.5,
+    "score_contribution": 0,
+    "impact": 1,
+    "effort": 1,
+    "evidence_json": {
+      "url": "https://shop.example.com/llms.txt",
+      "http_status": 404,
+      "body_length": 0
+    },
+    "fix_summary": "No llms.txt found at /llms.txt. Low priority: there's no established evidence it affects AI citation visibility, but some agentic/coding tools do read it."
+  },
+  {
+    "pillar": "ucp",
+    "category": "merchant_center_eligibility",
+    "signal_key": "merchant_center_account_ready",
+    "status": "not_applicable",
+    "weight": 0,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 2,
+    "evidence_json": {
+      "attested": null,
+      "feeds_configured": false,
+      "external_gate": true
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "payment_ap2_readiness",
+    "signal_key": "merchant_of_record_declared",
+    "status": "not_applicable",
+    "weight": 1.5,
+    "score_contribution": 0,
+    "impact": 2,
+    "effort": 2,
+    "evidence_json": {
+      "mor_signal": null,
+      "observable": false
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "native_commerce_attribute",
+    "status": "fail",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 2,
+    "evidence_json": {
+      "products_with_attr": 0,
+      "products_total": 1,
+      "external_gate": true
+    },
+    "fix_summary": "No products carry the native_commerce attribute — none are checkout-eligible for UCP-powered checkout."
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "structured_data",
+    "signal_key": "offer_schema_complete",
+    "status": "not_applicable",
+    "weight": 1.5,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 2,
+    "evidence_json": {
+      "variants_checked": 0,
+      "reason": "no Product schema found to evaluate Offer completeness against"
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "structured_data",
+    "signal_key": "organization_schema_present",
+    "status": "fail",
+    "weight": 1,
+    "score_contribution": 0,
+    "impact": 3,
+    "effort": 2,
+    "evidence_json": {
+      "found": false,
+      "has_name": false,
+      "has_identifier": false,
+      "homepage_reachable": true
+    },
+    "fix_summary": "Publish a schema.org Organization (or LocalBusiness) node with name/url/logo so agents can identify who they're buying from."
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "price_consistency_cross_surface",
+    "status": "not_applicable",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 2,
+    "evidence_json": {
+      "sampled": [],
+      "mismatch_rate": 0
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "product_id_consistency",
+    "status": "not_applicable",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 5,
+    "effort": 3,
+    "evidence_json": {
+      "sampled": [],
+      "mismatch_rate": 0
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "structured_data",
+    "signal_key": "product_schema_present",
+    "status": "not_applicable",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 2,
+    "evidence_json": {
+      "sampled": 0,
+      "reason": "no product pages could be sampled"
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "policy_transparency",
+    "signal_key": "return_policy_present_consistent",
+    "status": "fail",
+    "weight": 1.5,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 2,
+    "evidence_json": {
+      "found_on_site": false,
+      "structured": false,
+      "feed_match": null,
+      "checked_urls": [],
+      "found_url": null
+    },
+    "fix_summary": "Publish a return policy at a discoverable URL (e.g. /policies/refund-policy or /pages/returns)."
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "crawler_access",
+    "signal_key": "robots_txt_valid",
+    "status": "pass",
+    "weight": 1,
+    "score_contribution": 1,
+    "impact": 3,
+    "effort": 1,
+    "evidence_json": {
+      "url": "https://shop.example.com/robots.txt",
+      "http_status": 200,
+      "reachable": true,
+      "group_count": 1,
+      "sitemap_directive_count": 0
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "content_legibility",
+    "signal_key": "schema_in_raw_html",
+    "status": "not_applicable",
+    "weight": 2,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 3,
+    "evidence_json": {
+      "sampled": 0,
+      "reason": "no product pages could be sampled"
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "policy_transparency",
+    "signal_key": "shipping_info_present_consistent",
+    "status": "fail",
+    "weight": 1.25,
+    "score_contribution": 0,
+    "impact": 3,
+    "effort": 2,
+    "evidence_json": {
+      "found_on_site": false,
+      "structured": false,
+      "feed_match": null,
+      "checked_urls": [],
+      "found_url": null
+    },
+    "fix_summary": "Publish shipping information at a discoverable URL (e.g. /policies/shipping-policy or /pages/shipping)."
+  },
+  {
+    "pillar": "agent_readability",
+    "category": "discovery_surfaces",
+    "signal_key": "sitemap_present",
+    "status": "partial",
+    "weight": 1,
+    "score_contribution": 0.5,
+    "impact": 2,
+    "effort": 1,
+    "evidence_json": {
+      "url": "https://shop.example.com/sitemap.xml",
+      "http_status": 200,
+      "url_count": 0
+    },
+    "fix_summary": "sitemap.xml exists but contains no <loc> entries."
+  },
+  {
+    "pillar": "ucp",
+    "category": "policy_transparency",
+    "signal_key": "support_contact_present",
+    "status": "fail",
+    "weight": 1.25,
+    "score_contribution": 0,
+    "impact": 3,
+    "effort": 1,
+    "evidence_json": {
+      "found": false,
+      "machine_readable": false,
+      "method": null
+    },
+    "fix_summary": "Publish structured customer support contact details (schema.org Organization.contactPoint)."
+  },
+  {
+    "pillar": "ucp",
+    "category": "product_data_hygiene",
+    "signal_key": "title_description_consistency",
+    "status": "not_applicable",
+    "weight": 1,
+    "score_contribution": 0,
+    "impact": 3,
+    "effort": 3,
+    "evidence_json": {
+      "sampled": []
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "merchant_center_eligibility",
+    "signal_key": "ucp_early_access_status",
+    "status": "not_applicable",
+    "weight": 0,
+    "score_contribution": 0,
+    "impact": 4,
+    "effort": 1,
+    "evidence_json": {
+      "status": null,
+      "region_eligible": null,
+      "external_gate": true
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "discovery_manifest",
+    "signal_key": "ucp_manifest_present",
+    "status": "pass",
+    "weight": 3,
+    "score_contribution": 3,
+    "impact": 5,
+    "effort": 2,
+    "evidence_json": {
+      "url": "https://shop.example.com/.well-known/ucp",
+      "http_status": 200,
+      "content_type": "application/json",
+      "is_valid_json": true,
+      "requires_auth": false,
+      "redirect_chain": []
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "discovery_manifest",
+    "signal_key": "ucp_manifest_version_declared",
+    "status": "pass",
+    "weight": 1.5,
+    "score_contribution": 1.5,
+    "impact": 4,
+    "effort": 1,
+    "evidence_json": {
+      "declared_version": "2026-04-08",
+      "is_current": true,
+      "supported_versions_map": null
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "discovery_manifest",
+    "signal_key": "ucp_namespace_authority_valid",
+    "status": "pass",
+    "weight": 1,
+    "score_contribution": 1,
+    "impact": 3,
+    "effort": 1,
+    "evidence_json": {
+      "urls_checked": [
+        {
+          "url": "https://ucp.dev/specification/overview",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/2026-04-08/services/shopping/rest.openapi.json",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/specification/checkout",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/2026-04-08/schemas/shopping/checkout.json",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/specification/cart",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/2026-04-08/schemas/shopping/cart.json",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/specification/catalog",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/2026-04-08/schemas/shopping/catalog.json",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/specification/fulfillment",
+          "authority_ok": true
+        },
+        {
+          "url": "https://ucp.dev/2026-04-08/schemas/shopping/fulfillment.json",
+          "authority_ok": true
+        }
+      ]
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "discovery_manifest",
+    "signal_key": "ucp_services_declared",
+    "status": "pass",
+    "weight": 2.5,
+    "score_contribution": 2.5,
+    "impact": 5,
+    "effort": 3,
+    "evidence_json": {
+      "services": [
+        {
+          "version": "2026-04-08",
+          "transport": "rest",
+          "endpoint": "https://shop.example.com/ucp/v1",
+          "transport_ok": true,
+          "endpoint_is_url": true,
+          "schema_present": true
+        }
+      ]
+    },
+    "fix_summary": null
+  }
+]

@@ -12,29 +12,16 @@
  * Grounded against UCP spec version 2026-04-08 (ucp.dev) — capability ids:
  *   ucp.capabilities["dev.ucp.shopping.checkout" | ".cart" | ".catalog" | ".fulfillment"],
  *   ucp.capabilities["dev.ucp.common.identity_linking"].
+ *
+ * WEIGHT/IMPACT/EFFORT: read from ./signalDefinitions.ts (getDef), not
+ * declared here — see that file's header for the full provenance note
+ * (these six were never given explicit numbers in the spec doc, unlike
+ * Category 1 — chosen proportional to impact so the category's total lined
+ * up with its 0.25 weight class).
  */
 
 import type { SignalRow, ManifestState, Fetcher } from "./manifestChecks.ts";
-
-const CATEGORY = "capabilities";
-
-// Weight/impact/effort per signal (Category 3, weight class 0.25 of the UCP pillar).
-// Weights aren't given explicit numbers in the spec doc (unlike Category 1) — chosen
-// proportional to impact so the category's total weight lines up with its 0.25 class.
-const W = {
-  checkout: { weight: 2.5, impact: 5, effort: 3 },
-  cart: { weight: 2.0, impact: 4, effort: 3 },
-  catalog: { weight: 2.0, impact: 4, effort: 3 },
-  fulfillment: { weight: 1.5, impact: 3, effort: 3 },
-  identityLinking: { weight: 1.0, impact: 2, effort: 3 },
-  endpoint: { weight: 2.0, impact: 4, effort: 3 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
+import { getDef, contribution } from "./signalDefinitions.ts";
 
 function capabilityEntries(m: ManifestState, capabilityId: string): any[] {
   const entries = m.parsed?.ucp?.capabilities?.[capabilityId];
@@ -67,7 +54,7 @@ function catalogCapability(m: ManifestState): { entries: any[]; matchedKeys: str
 // ---------------------------------------------------------------------------
 
 export function sig_capability_checkout_declared(m: ManifestState, opts?: { checkoutHandoffOptIn?: boolean }): SignalRow {
-  const cfg = W.checkout;
+  const def = getDef("capability_checkout_declared");
   const entries = capabilityEntries(m, "dev.ucp.shopping.checkout");
   const declared = entries.length > 0;
   const version: string | null = entries.find((e) => e?.version)?.version ?? null;
@@ -89,14 +76,14 @@ export function sig_capability_checkout_declared(m: ManifestState, opts?: { chec
   // which artifact Adeptra happened to generate.
   if (!declared && handoffOptIn) {
     return {
-      pillar: "ucp",
-      category: CATEGORY,
-      signal_key: "capability_checkout_declared",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
-      score_contribution: contribution(cfg.weight, "not_applicable"),
-      impact: cfg.impact,
-      effort: cfg.effort,
+      weight: def.weight,
+      score_contribution: contribution(def.weight, "not_applicable"),
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { declared, version, schema_present: schemaPresent, checkout_handoff_opt_in: true },
       fix_summary: null,
     };
@@ -118,21 +105,21 @@ export function sig_capability_checkout_declared(m: ManifestState, opts?: { chec
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "capability_checkout_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { declared, version, schema_present: schemaPresent, checkout_handoff_opt_in: handoffOptIn },
     fix_summary: fix,
   };
 }
 
 export function sig_capability_cart_declared(m: ManifestState): SignalRow {
-  const cfg = W.cart;
+  const def = getDef("capability_cart_declared");
   const entries = capabilityEntries(m, "dev.ucp.shopping.cart");
   const declared = entries.length > 0;
   const config = entries[0] ?? null;
@@ -151,21 +138,21 @@ export function sig_capability_cart_declared(m: ManifestState): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "capability_cart_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { declared, config },
     fix_summary: fix,
   };
 }
 
 export function sig_capability_catalog_declared(m: ManifestState): SignalRow {
-  const cfg = W.catalog;
+  const def = getDef("capability_catalog_declared");
   const { entries, matchedKeys } = catalogCapability(m);
   const declared = entries.length > 0;
 
@@ -175,21 +162,21 @@ export function sig_capability_catalog_declared(m: ManifestState): SignalRow {
     : "Declare dev.ucp.shopping.catalog (or its .search/.lookup sub-capabilities) in ucp.capabilities for product catalog access.";
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "capability_catalog_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { declared, matched_keys: matchedKeys },
     fix_summary: fix,
   };
 }
 
 export function sig_capability_fulfillment_declared(m: ManifestState): SignalRow {
-  const cfg = W.fulfillment;
+  const def = getDef("capability_fulfillment_declared");
   const entries = capabilityEntries(m, "dev.ucp.shopping.fulfillment");
   const declared = entries.length > 0;
   const version: string | null = entries.find((e) => e?.version)?.version ?? null;
@@ -210,14 +197,14 @@ export function sig_capability_fulfillment_declared(m: ManifestState): SignalRow
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "capability_fulfillment_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { declared, version, schema_present: schemaPresent },
     fix_summary: fix,
   };
@@ -227,7 +214,7 @@ export function sig_capability_identity_linking_declared(
   m: ManifestState,
   opts?: { identityLinkingOptOut?: boolean },
 ): SignalRow {
-  const cfg = W.identityLinking;
+  const def = getDef("capability_identity_linking_declared");
   const entries = capabilityEntries(m, "dev.ucp.common.identity_linking");
   const declared = entries.length > 0;
   const scopes: string[] = entries.flatMap((e) => (Array.isArray(e?.scopes) ? e.scopes : []));
@@ -251,14 +238,14 @@ export function sig_capability_identity_linking_declared(
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "capability_identity_linking_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { declared, scopes, opted_out: optedOut },
     fix_summary: fix,
   };
@@ -273,7 +260,7 @@ export async function checkEndpointReachability(
   fetcher: Fetcher,
   timeoutMs = 5000,
 ): Promise<SignalRow> {
-  const cfg = W.endpoint;
+  const def = getDef("endpoint_reachability");
   const shopping = m.parsed?.ucp?.services?.["dev.ucp.shopping"];
   const entries: any[] = Array.isArray(shopping) ? shopping : [];
   const endpoint: string | null = entries.find((e) => !!e?.endpoint)?.endpoint ?? null;
@@ -308,14 +295,14 @@ export async function checkEndpointReachability(
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "endpoint_reachability",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { endpoint, http_status: httpStatus, notes },
     fix_summary: fix,
   };

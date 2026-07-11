@@ -634,6 +634,46 @@ isn't wired to anything real.
 live-verified against two real stores (skims.com, gymshark.com). A second, independent pillar —
 `agent_readability` (10 signals) — is now also implemented, tested, and live-verified.**
 
+- [x] **Signal-definition guardrail: weight/impact/effort drift made impossible-by-construction
+      (2026-07-11).** Inventory (grepping every `function contribution` across `merchant/ucp/`) found
+      **nine** check modules each carrying its own local `W` weight/impact/effort object and its own
+      byte-identical copy of `contribution()` — not the six originally estimated. That scattering is
+      exactly how `robots_txt_valid` drifted to weight 1.5 instead of spec's 1.0 undetected (see the
+      entry below): nothing mechanically connected any of the nine copies to a declared source of
+      truth. New `signalDefinitions.ts` is now the single canonical source for every signal in both
+      pillars — an array (`SIGNAL_DEFINITIONS`, duplicate `signal_key`s rejected at import time, not
+      just in a test someone might skip), a `getDef(signal_key)` accessor that throws by name on a
+      missing/mistyped key, and one shared `contribution()`. Every `sig_*` function across all nine
+      files (`manifestChecks.ts`, `capabilityChecks.ts`, `feedChecks.ts`, `pageChecks.ts`,
+      `llmChecks.ts`, `policyChecks.ts`, `paymentChecks.ts`, `readinessChecks.ts`,
+      `readabilityChecks.ts`) now reads `pillar`/`category`/`signal_key`/`weight`/`impact`/`effort`
+      from `getDef()` — none redeclares a literal of its own — closing the miscategorization gap, not
+      just weight drift. This was a **pure move, zero value changes**: canonical values were
+      transcribed exactly from the inventory, proved with a golden fixture of all 35 signals' full
+      output captured *before* touching any check module and diffed *after* — **byte-identical**
+      (`test_signal_values_golden.ts`). A permanent guardrail (`test_signal_definitions.ts`) now runs
+      on every future change: every declared weight `>= 0`; the zero-weight set is asserted to be
+      **exactly** `{merchant_center_account_ready, ucp_early_access_status}` — not a bare `>= 0`
+      check, so a scored signal accidentally zeroed, or a readiness signal accidentally given a
+      nonzero weight, both fail loudly instead of passing; impact/effort in `[1,5]`; and — running the
+      **real orchestrators** (`runManifestChecks`, `runCapabilityChecks`, `runFeedChecks`,
+      `runPageConsistencyChecks`, `runLlmChecks`, `runPolicyChecks`, `runPaymentChecks`,
+      `runReadinessChecks`, `runReadabilityChecks`) against representative mocks — the emitted
+      `signal_key` set matches the declared set exactly, per pillar, in both directions (an
+      undeclared-but-emitted signal, or a declared-but-unemitted one, both fail). Verified the
+      guardrail actually catches drift, not just passes trivially: temporarily hardcoded a wrong
+      weight in `paymentChecks.ts`, confirmed the test failed with the exact expected/actual mismatch,
+      reverted, confirmed green again. The `agent_readability` 2026-07-10 reconciliation history (the
+      six-signal drift correction, see below) now lives in `signalDefinitions.ts`'s header comment as
+      the documented home of that decision, removed from `readabilityChecks.ts` itself. Header comment
+      states plainly which pillar's numbers are validated against what: UCP weights were **never**
+      externally spec'd as literal numbers (only weight *classes* per category) — "chosen proportional
+      to impact" is a frozen original design choice, not a value confirmed against an outside
+      authority; `agent_readability` weights **were** spec'd and did drift, reconciled 2026-07-10.
+      Live-verified against skims.com: a fresh run post-refactor scored **identically** to the last
+      pre-refactor run on the same site (`ucp` 82.69%, 15/22; `agent_readability` 96.77%, 9/10) —
+      confirmed by a row-by-row DB diff of all 35 signals' status/weight/score_contribution/impact/
+      effort/pillar/category between the two runs: zero mismatches.
 - [x] **Second pillar: `agent_readability` (2026-07-11).** `pillar='agent_readability'` — "can a
       generic AI system access, parse, and correctly understand this store?", deliberately NOT a
       claim about AEO/GEO citation lift. `aeo_geo` is a third pillar value the schema has allowed

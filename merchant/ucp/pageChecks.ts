@@ -22,24 +22,12 @@
 
 import type { SignalRow, Fetcher } from "./manifestChecks.ts";
 import type { FeedVariant } from "./feedChecks.ts";
+import { getDef, contribution } from "./signalDefinitions.ts";
 
-const CATEGORY = "product_data_hygiene";
 const PAGE_FETCH_TIMEOUT_MS = 8000;
 const DEFAULT_SAMPLE_SIZE = 15; // per signal-specs.md open item #2
 const MISMATCH_PARTIAL_THRESHOLD = 0.2; // < 20% mismatch => partial, per spec
 const PRICE_TOLERANCE = 0.01; // rounding tolerance; same-currency assumed
-
-const W = {
-  productId: { weight: 2.0, impact: 5, effort: 3 },
-  price: { weight: 2.0, impact: 5, effort: 2 },
-  availability: { weight: 1.5, impact: 4, effort: 2 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -244,7 +232,7 @@ export async function sampleAndCompare(
 // ---------------------------------------------------------------------------
 
 export function sig_product_id_consistency(comparisons: SampledComparison[] | null): SignalRow {
-  const cfg = W.productId;
+  const def = getDef("product_id_consistency");
   let status: SignalRow["status"];
   let fix: string | null = null;
   let mismatchRate = 0;
@@ -267,14 +255,14 @@ export function sig_product_id_consistency(comparisons: SampledComparison[] | nu
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "product_id_consistency",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       sampled: (comparisons ?? []).map((c) => ({ sku: c.sku, page_found: c.pageFound, fetch_error: c.fetchError })),
       mismatch_rate: mismatchRate,
@@ -284,7 +272,7 @@ export function sig_product_id_consistency(comparisons: SampledComparison[] | nu
 }
 
 export function sig_price_consistency(comparisons: SampledComparison[] | null): SignalRow {
-  const cfg = W.price;
+  const def = getDef("price_consistency_cross_surface");
   let status: SignalRow["status"];
   let fix: string | null = null;
   let mismatchRate = 0;
@@ -307,14 +295,14 @@ export function sig_price_consistency(comparisons: SampledComparison[] | null): 
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "price_consistency_cross_surface",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       sampled: (comparisons ?? []).map((c) => ({
         sku: c.sku,
@@ -329,7 +317,7 @@ export function sig_price_consistency(comparisons: SampledComparison[] | null): 
 }
 
 export function sig_availability_consistency(comparisons: SampledComparison[] | null): SignalRow {
-  const cfg = W.availability;
+  const def = getDef("availability_consistency");
   let status: SignalRow["status"];
   let fix: string | null = null;
 
@@ -351,14 +339,14 @@ export function sig_availability_consistency(comparisons: SampledComparison[] | 
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "availability_consistency",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       sampled: (comparisons ?? []).map((c) => ({
         sku: c.sku,

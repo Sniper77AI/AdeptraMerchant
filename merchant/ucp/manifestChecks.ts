@@ -10,7 +10,15 @@
  *
  * Grounded against UCP spec version 2026-04-08 (ucp.dev) — real field names:
  *   ucp.version, ucp.services["dev.ucp.shopping"], ucp.capabilities, spec/schema URLs.
+ *
+ * WEIGHT/IMPACT/EFFORT: each signal function reads its definition from
+ * ./signalDefinitions.ts (getDef) rather than declaring its own literal —
+ * see that file for why. Safe despite signalDefinitions.ts importing
+ * `SignalRow` back from here: that import is `import type`, fully erased at
+ * runtime, so there's no real circular dependency, only a type-only one.
  */
+
+import { getDef, contribution } from "./signalDefinitions.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,23 +81,9 @@ export const VALID_AUTHORITY_HOSTS = new Set(["ucp.dev"]);
 
 export const ALLOWED_TRANSPORTS = new Set(["rest", "mcp", "a2a"]);
 
-// Per-signal weights/impact/effort (from the signal spec doc).
-const W = {
-  present: { weight: 3.0, impact: 5, effort: 2 },
-  version: { weight: 1.5, impact: 4, effort: 1 },
-  services: { weight: 2.5, impact: 5, effort: 3 },
-  namespace: { weight: 1.0, impact: 3, effort: 1 },
-} as const;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
 
 function hostOf(url: string): string | null {
   try {
@@ -152,7 +146,7 @@ export async function fetchManifest(domain: string, fetcher: Fetcher): Promise<M
 // ---------------------------------------------------------------------------
 
 export function sig_manifest_present(m: ManifestState): SignalRow {
-  const cfg = W.present;
+  const def = getDef("ucp_manifest_present");
   let status: SignalRow["status"];
   let fix: string | null = null;
 
@@ -176,14 +170,14 @@ export function sig_manifest_present(m: ManifestState): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: "discovery_manifest",
-    signal_key: "ucp_manifest_present",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       url: m.url,
       http_status: m.httpStatus,
@@ -197,7 +191,7 @@ export function sig_manifest_present(m: ManifestState): SignalRow {
 }
 
 export function sig_version_declared(m: ManifestState): SignalRow {
-  const cfg = W.version;
+  const def = getDef("ucp_manifest_version_declared");
   const ucp = m.parsed?.ucp;
   const declared: string | undefined = ucp?.version;
   const supportedVersionsMap = ucp?.supported_versions ?? null;
@@ -222,14 +216,14 @@ export function sig_version_declared(m: ManifestState): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: "discovery_manifest",
-    signal_key: "ucp_manifest_version_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       declared_version: declared ?? null,
       is_current: declared === CURRENT_UCP_VERSION,
@@ -240,7 +234,7 @@ export function sig_version_declared(m: ManifestState): SignalRow {
 }
 
 export function sig_services_declared(m: ManifestState): SignalRow {
-  const cfg = W.services;
+  const def = getDef("ucp_services_declared");
   const shopping = m.parsed?.ucp?.services?.["dev.ucp.shopping"];
   const entries: any[] = Array.isArray(shopping) ? shopping : [];
 
@@ -275,21 +269,21 @@ export function sig_services_declared(m: ManifestState): SignalRow {
   // NOTE: endpoint *reachability* is a separate signal (endpoint_reachability, Cat 3).
 
   return {
-    pillar: "ucp",
-    category: "discovery_manifest",
-    signal_key: "ucp_services_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { services: analyzed },
     fix_summary: fix,
   };
 }
 
 export function sig_namespace_authority_valid(m: ManifestState): SignalRow {
-  const cfg = W.namespace;
+  const def = getDef("ucp_namespace_authority_valid");
   const ucp = m.parsed?.ucp;
 
   // Collect all spec/schema URLs across services + capabilities.
@@ -329,14 +323,14 @@ export function sig_namespace_authority_valid(m: ManifestState): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: "discovery_manifest",
-    signal_key: "ucp_namespace_authority_valid",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { urls_checked: checked },
     fix_summary: fix,
   };

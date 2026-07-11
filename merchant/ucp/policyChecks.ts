@@ -32,24 +32,12 @@
 
 import type { SignalRow, Fetcher } from "./manifestChecks.ts";
 import { jsonLdBlocks, flattenNodes, typesOf } from "./pageChecks.ts";
+import { getDef, contribution } from "./signalDefinitions.ts";
 
-const CATEGORY = "policy_transparency";
 const POLICY_FETCH_TIMEOUT_MS = 8000;
-
-const W = {
-  returnPolicy: { weight: 1.5, impact: 4, effort: 2 },
-  shippingInfo: { weight: 1.25, impact: 3, effort: 2 },
-  supportContact: { weight: 1.25, impact: 3, effort: 1 },
-} as const;
 
 const RETURN_POLICY_CANDIDATES = ["/policies/refund-policy", "/pages/returns", "/pages/return-policy", "/pages/returns-policy"];
 const SHIPPING_INFO_CANDIDATES = ["/policies/shipping-policy", "/pages/shipping", "/pages/shipping-policy", "/pages/shipping-info"];
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
 
 // ---------------------------------------------------------------------------
 // Network boundary (the only impure functions)
@@ -112,12 +100,12 @@ export async function fetchHomepage(rootUrl: string, fetcher: Fetcher): Promise<
 // ---------------------------------------------------------------------------
 
 function sig_from_page_probe(
-  signalKey: string,
-  cfg: { weight: number; impact: number; effort: number },
+  signal_key: string,
   probe: PagePresenceProbe,
   notFoundFix: string,
   notStructuredFix: string,
 ): SignalRow {
+  const def = getDef(signal_key);
   let status: SignalRow["status"];
   let fix: string | null = null;
   if (probe.foundUrl && probe.hasStructuredData) {
@@ -131,14 +119,14 @@ function sig_from_page_probe(
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: signalKey,
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       found_on_site: !!probe.foundUrl,
       structured: probe.hasStructuredData,
@@ -153,7 +141,6 @@ function sig_from_page_probe(
 export function sig_return_policy_present(probe: PagePresenceProbe): SignalRow {
   return sig_from_page_probe(
     "return_policy_present_consistent",
-    W.returnPolicy,
     probe,
     "Publish a return policy at a discoverable URL (e.g. /policies/refund-policy or /pages/returns).",
     "Return policy page exists but isn't machine-readable (no structured data found).",
@@ -163,7 +150,6 @@ export function sig_return_policy_present(probe: PagePresenceProbe): SignalRow {
 export function sig_shipping_info_present(probe: PagePresenceProbe): SignalRow {
   return sig_from_page_probe(
     "shipping_info_present_consistent",
-    W.shippingInfo,
     probe,
     "Publish shipping information at a discoverable URL (e.g. /policies/shipping-policy or /pages/shipping).",
     "Shipping info page exists but isn't machine-readable (no structured data found).",
@@ -171,7 +157,7 @@ export function sig_shipping_info_present(probe: PagePresenceProbe): SignalRow {
 }
 
 export function sig_support_contact_present(homepage: HomepageState): SignalRow {
-  const cfg = W.supportContact;
+  const def = getDef("support_contact_present");
   const org = flattenNodes(homepage.blocks).find((n) => typesOf(n).includes("Organization"));
   const contactPoint = Array.isArray(org?.contactPoint) ? org.contactPoint[0] : org?.contactPoint;
   const hasStructured = !!(contactPoint && (contactPoint.telephone || contactPoint.email || contactPoint.contactType));
@@ -189,14 +175,14 @@ export function sig_support_contact_present(homepage: HomepageState): SignalRow 
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "support_contact_present",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       found: !!org,
       machine_readable: hasStructured,

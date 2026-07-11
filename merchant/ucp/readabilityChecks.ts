@@ -41,6 +41,7 @@ import type { SignalRow, Fetcher } from "./manifestChecks.ts";
 import type { FeedVariant } from "./feedChecks.ts";
 import { jsonLdBlocks, fetchProductPage, type ProductPageState } from "./pageChecks.ts";
 import { fetchHomepage, type HomepageState } from "./policyChecks.ts";
+import { getDef, contribution } from "./signalDefinitions.ts";
 
 const ROBOTS_FETCH_TIMEOUT_MS = 8000;
 const SITEMAP_FETCH_TIMEOUT_MS = 8000;
@@ -54,36 +55,10 @@ const LLMS_TXT_MIN_LENGTH = 20; // below this, treat as an empty/placeholder fil
  *  rather than a silent magic number. */
 export const CONTENT_BODY_TEXT_THRESHOLD = 200;
 
-// RECONCILED 2026-07-10 against the original Build 1 spec table — six signals'
-// weight and/or impact/effort had drifted from spec during implementation
-// (caught live: robots_txt_valid was scoring at weight 1.5, not the spec's 1.0).
-// A full audit found five more: ai_crawler_access_retrieval (w 2.0->2.5, i 4->5,
-// e 2->1), schema_in_raw_html (w 2.5->2.0, i 5->4), offer_schema_complete
-// (w 2.0->1.5), organization_schema_present (w 1.5->1.0, e 1->2), sitemap_present
-// (w 1.5->1.0, i 3->2), llms_txt_present (i 2->1). ai_crawler_access_training,
-// content_server_rendered, and product_schema_present already matched spec.
-// Fixed going forward only — analysis_runs are immutable, so every run scored
-// before this date used the old (wrong) values and is left exactly as reported;
-// do not compare a pre-2026-07-10 agent_readability score against one after.
-// See README for the full before/after table.
-const W = {
-  robotsValid: { weight: 1.0, impact: 3, effort: 1 },
-  crawlerRetrieval: { weight: 2.5, impact: 5, effort: 1 },
-  crawlerTraining: { weight: 1.0, impact: 2, effort: 1 },
-  contentServerRendered: { weight: 3.0, impact: 5, effort: 4 },
-  schemaInRawHtml: { weight: 2.0, impact: 4, effort: 3 },
-  productSchema: { weight: 2.0, impact: 4, effort: 2 },
-  offerSchema: { weight: 1.5, impact: 4, effort: 2 },
-  organizationSchema: { weight: 1.0, impact: 3, effort: 2 },
-  sitemapPresent: { weight: 1.0, impact: 2, effort: 1 },
-  llmsTxt: { weight: 0.5, impact: 1, effort: 1 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
+// Canonical weight/impact/effort values (including the 2026-07-10
+// reconciliation against the original Build 1 spec table) now live in
+// signalDefinitions.ts's header comment — the documented home of that
+// history. This file reads them via getDef(), never redeclares them.
 
 // ---------------------------------------------------------------------------
 // robots.txt: fetch + hand-rolled parser + per-token blocked lookup
@@ -354,7 +329,7 @@ function fetchedPages(pageStates: ProductPageState[]): ProductPageState[] {
 // ---------------------------------------------------------------------------
 
 export function sig_robots_txt_valid(robots: RobotsTxtState, parsed: ParsedRobots): SignalRow {
-  const cfg = W.robotsValid;
+  const def = getDef("robots_txt_valid");
   const okStatus = robots.reachable && robots.httpStatus != null && robots.httpStatus >= 200 && robots.httpStatus < 300;
 
   let status: SignalRow["status"];
@@ -370,14 +345,14 @@ export function sig_robots_txt_valid(robots: RobotsTxtState, parsed: ParsedRobot
   }
 
   return {
-    pillar: "agent_readability",
-    category: "crawler_access",
-    signal_key: "robots_txt_valid",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: {
       url: robots.url,
       http_status: robots.httpStatus,
@@ -398,7 +373,7 @@ function classifyBotAccess(parsed: ParsedRobots, bots: string[]): { checked: { b
 }
 
 export function sig_ai_crawler_access_retrieval(parsed: ParsedRobots): SignalRow {
-  const cfg = W.crawlerRetrieval;
+  const def = getDef("ai_crawler_access_retrieval");
   const { checked, blockedCount } = classifyBotAccess(parsed, RETRIEVAL_BOTS);
 
   let status: SignalRow["status"];
@@ -414,21 +389,21 @@ export function sig_ai_crawler_access_retrieval(parsed: ParsedRobots): SignalRow
   }
 
   return {
-    pillar: "agent_readability",
-    category: "crawler_access",
-    signal_key: "ai_crawler_access_retrieval",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { checked, blocked_count: blockedCount, total: RETRIEVAL_BOTS.length },
     fix_summary: fix,
   };
 }
 
 export function sig_ai_crawler_access_training(parsed: ParsedRobots, opts?: { aiTrainingOptOut?: boolean }): SignalRow {
-  const cfg = W.crawlerTraining;
+  const def = getDef("ai_crawler_access_training");
   const optedOut = !!opts?.aiTrainingOptOut;
   const { checked, blockedCount } = classifyBotAccess(parsed, TRAINING_BOTS);
 
@@ -437,14 +412,14 @@ export function sig_ai_crawler_access_training(parsed: ParsedRobots, opts?: { ai
   // identity_linking_opt_out / checkout_handoff_opt_in).
   if (optedOut) {
     return {
-      pillar: "agent_readability",
-      category: "crawler_access",
-      signal_key: "ai_crawler_access_training",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
-      score_contribution: contribution(cfg.weight, "not_applicable"),
-      impact: cfg.impact,
-      effort: cfg.effort,
+      weight: def.weight,
+      score_contribution: contribution(def.weight, "not_applicable"),
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { checked, blocked_count: blockedCount, total: TRAINING_BOTS.length, ai_training_opt_out: true },
       fix_summary: null,
     };
@@ -463,14 +438,14 @@ export function sig_ai_crawler_access_training(parsed: ParsedRobots, opts?: { ai
   }
 
   return {
-    pillar: "agent_readability",
-    category: "crawler_access",
-    signal_key: "ai_crawler_access_training",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { checked, blocked_count: blockedCount, total: TRAINING_BOTS.length, ai_training_opt_out: false },
     fix_summary: fix,
   };
@@ -486,19 +461,19 @@ export function sig_ai_crawler_access_training(parsed: ParsedRobots, opts?: { ai
  *  needs feed grounding; without a feed, cap at partial. not_applicable means
  *  literally no product page could be sampled at all (not "no feed"). */
 export function sig_content_server_rendered(pageStates: ProductPageState[], feedVariants: FeedVariant[]): SignalRow {
-  const cfg = W.contentServerRendered;
+  const def = getDef("content_server_rendered");
   const fetched = fetchedPages(pageStates);
 
   if (fetched.length === 0) {
     return {
-      pillar: "agent_readability",
-      category: "content_legibility",
-      signal_key: "content_server_rendered",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
-      score_contribution: contribution(cfg.weight, "not_applicable"),
-      impact: cfg.impact,
-      effort: cfg.effort,
+      weight: def.weight,
+      score_contribution: contribution(def.weight, "not_applicable"),
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { sampled: 0, body_text_threshold: CONTENT_BODY_TEXT_THRESHOLD, reason: "no product pages could be sampled" },
       fix_summary: null,
     };
@@ -538,33 +513,33 @@ export function sig_content_server_rendered(pageStates: ProductPageState[], feed
   }
 
   return {
-    pillar: "agent_readability",
-    category: "content_legibility",
-    signal_key: "content_server_rendered",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { sampled: samples, body_text_threshold: CONTENT_BODY_TEXT_THRESHOLD, has_feed: hasFeed },
     fix_summary: fix,
   };
 }
 
 export function sig_schema_in_raw_html(pageStates: ProductPageState[]): SignalRow {
-  const cfg = W.schemaInRawHtml;
+  const def = getDef("schema_in_raw_html");
   const fetched = fetchedPages(pageStates);
 
   if (fetched.length === 0) {
     return {
-      pillar: "agent_readability",
-      category: "content_legibility",
-      signal_key: "schema_in_raw_html",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
-      score_contribution: contribution(cfg.weight, "not_applicable"),
-      impact: cfg.impact,
-      effort: cfg.effort,
+      weight: def.weight,
+      score_contribution: contribution(def.weight, "not_applicable"),
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { sampled: 0, reason: "no product pages could be sampled" },
       fix_summary: null,
     };
@@ -586,14 +561,14 @@ export function sig_schema_in_raw_html(pageStates: ProductPageState[]): SignalRo
   }
 
   return {
-    pillar: "agent_readability",
-    category: "content_legibility",
-    signal_key: "schema_in_raw_html",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { sampled: fetched.length, with_schema_in_raw_html: withSchema.length },
     fix_summary: fix,
   };
@@ -604,19 +579,19 @@ export function sig_schema_in_raw_html(pageStates: ProductPageState[]): SignalRo
 // ---------------------------------------------------------------------------
 
 export function sig_product_schema_present(pageStates: ProductPageState[]): SignalRow {
-  const cfg = W.productSchema;
+  const def = getDef("product_schema_present");
   const fetched = fetchedPages(pageStates);
 
   if (fetched.length === 0) {
     return {
-      pillar: "agent_readability",
-      category: "structured_data",
-      signal_key: "product_schema_present",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
-      score_contribution: contribution(cfg.weight, "not_applicable"),
-      impact: cfg.impact,
-      effort: cfg.effort,
+      weight: def.weight,
+      score_contribution: contribution(def.weight, "not_applicable"),
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { sampled: 0, reason: "no product pages could be sampled" },
       fix_summary: null,
     };
@@ -638,34 +613,34 @@ export function sig_product_schema_present(pageStates: ProductPageState[]): Sign
   }
 
   return {
-    pillar: "agent_readability",
-    category: "structured_data",
-    signal_key: "product_schema_present",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { sampled: fetched.length, with_product_schema: withProduct.length },
     fix_summary: fix,
   };
 }
 
 export function sig_offer_schema_complete(pageStates: ProductPageState[]): SignalRow {
-  const cfg = W.offerSchema;
+  const def = getDef("offer_schema_complete");
   const fetched = fetchedPages(pageStates);
   const allVariants = fetched.flatMap((s) => s.variants);
 
   if (allVariants.length === 0) {
     return {
-      pillar: "agent_readability",
-      category: "structured_data",
-      signal_key: "offer_schema_complete",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
-      score_contribution: contribution(cfg.weight, "not_applicable"),
-      impact: cfg.impact,
-      effort: cfg.effort,
+      weight: def.weight,
+      score_contribution: contribution(def.weight, "not_applicable"),
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { variants_checked: 0, reason: "no Product schema found to evaluate Offer completeness against" },
       fix_summary: null,
     };
@@ -687,21 +662,21 @@ export function sig_offer_schema_complete(pageStates: ProductPageState[]): Signa
   }
 
   return {
-    pillar: "agent_readability",
-    category: "structured_data",
-    signal_key: "offer_schema_complete",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { variants_checked: allVariants.length, complete: complete.length },
     fix_summary: fix,
   };
 }
 
 export function sig_organization_schema_present(homepage: HomepageState): SignalRow {
-  const cfg = W.organizationSchema;
+  const def = getDef("organization_schema_present");
   const org = homepage.blocks
     .flatMap((b) => (Array.isArray(b?.["@graph"]) ? b["@graph"] : [b]))
     .find((n) => {
@@ -726,14 +701,14 @@ export function sig_organization_schema_present(homepage: HomepageState): Signal
   }
 
   return {
-    pillar: "agent_readability",
-    category: "structured_data",
-    signal_key: "organization_schema_present",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { found: !!org, has_name: hasName, has_identifier: hasIdentifier, homepage_reachable: homepage.reachable },
     fix_summary: fix,
   };
@@ -744,7 +719,7 @@ export function sig_organization_schema_present(homepage: HomepageState): Signal
 // ---------------------------------------------------------------------------
 
 export function sig_sitemap_present(sitemap: SitemapState): SignalRow {
-  const cfg = W.sitemapPresent;
+  const def = getDef("sitemap_present");
   const okStatus = sitemap.reachable && sitemap.httpStatus != null && sitemap.httpStatus >= 200 && sitemap.httpStatus < 300;
 
   let status: SignalRow["status"];
@@ -760,21 +735,21 @@ export function sig_sitemap_present(sitemap: SitemapState): SignalRow {
   }
 
   return {
-    pillar: "agent_readability",
-    category: "discovery_surfaces",
-    signal_key: "sitemap_present",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { url: sitemap.url, http_status: sitemap.httpStatus, url_count: sitemap.locs.length },
     fix_summary: fix,
   };
 }
 
 export function sig_llms_txt_present(state: LlmsTxtState): SignalRow {
-  const cfg = W.llmsTxt;
+  const def = getDef("llms_txt_present");
   const okStatus = state.reachable && state.httpStatus != null && state.httpStatus >= 200 && state.httpStatus < 300;
 
   let status: SignalRow["status"];
@@ -790,14 +765,14 @@ export function sig_llms_txt_present(state: LlmsTxtState): SignalRow {
   }
 
   return {
-    pillar: "agent_readability",
-    category: "discovery_surfaces",
-    signal_key: "llms_txt_present",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { url: state.url, http_status: state.httpStatus, body_length: state.bodyLength },
     fix_summary: fix,
   };

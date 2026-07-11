@@ -26,20 +26,9 @@
 import type { SignalRow, Fetcher } from "./manifestChecks.ts";
 import type { FeedState } from "./feedChecks.ts";
 import { fetchProductPage } from "./pageChecks.ts";
+import { getDef, contribution } from "./signalDefinitions.ts";
 
-const CATEGORY = "product_data_hygiene";
 const DEFAULT_LLM_SAMPLE_SIZE = 5;
-
-const W = {
-  titleDescription: { weight: 1.0, impact: 3, effort: 3 },
-  discoveryAttributes: { weight: 1.0, impact: 3, effort: 3 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
 
 // ---------------------------------------------------------------------------
 // LLM client (the only impure piece)
@@ -107,18 +96,18 @@ Respond with ONLY a JSON object: {"contradiction": boolean, "note": string}. "co
 }
 
 export async function sig_title_description_consistency(samples: TitleDescSample[], llm: LlmClient): Promise<SignalRow> {
-  const cfg = W.titleDescription;
+  const def = getDef("title_description_consistency");
 
   if (samples.length === 0) {
     return {
-      pillar: "ucp",
-      category: CATEGORY,
-      signal_key: "title_description_consistency",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
+      weight: def.weight,
       score_contribution: 0,
-      impact: cfg.impact,
-      effort: cfg.effort,
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { sampled: [] },
       fix_summary: null,
     };
@@ -157,14 +146,14 @@ export async function sig_title_description_consistency(samples: TitleDescSample
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "title_description_consistency",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { sampled: evaluated },
     fix_summary: fix,
   };
@@ -196,18 +185,18 @@ Respond with ONLY a JSON object: {"coverage": "rich" | "basic" | "sparse", "miss
 }
 
 export async function sig_discovery_attributes_enrichment(samples: EnrichmentSample[], llm: LlmClient): Promise<SignalRow> {
-  const cfg = W.discoveryAttributes;
+  const def = getDef("discovery_attributes_enrichment");
 
   if (samples.length === 0) {
     return {
-      pillar: "ucp",
-      category: CATEGORY,
-      signal_key: "discovery_attributes_enrichment",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
+      weight: def.weight,
       score_contribution: 0,
-      impact: cfg.impact,
-      effort: cfg.effort,
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { coverage_score: null, missing_attribute_types: [] },
       fix_summary: null,
     };
@@ -241,14 +230,14 @@ export async function sig_discovery_attributes_enrichment(samples: EnrichmentSam
   const missingAll = Array.from(new Set(results.flatMap((r) => r.missing)));
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "discovery_attributes_enrichment",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { coverage_score: results, missing_attribute_types: missingAll },
     fix_summary: fix,
   };
@@ -258,16 +247,17 @@ export async function sig_discovery_attributes_enrichment(samples: EnrichmentSam
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-function naSignal(signalKey: string, cfg: { weight: number; impact: number; effort: number }, evidence: Record<string, unknown>): SignalRow {
+function naSignal(signal_key: string, evidence: Record<string, unknown>): SignalRow {
+  const def = getDef(signal_key);
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: signalKey,
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status: "not_applicable",
-    weight: cfg.weight,
+    weight: def.weight,
     score_contribution: 0,
-    impact: cfg.impact,
-    effort: cfg.effort,
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: evidence,
     fix_summary: null,
   };
@@ -283,8 +273,8 @@ export async function runLlmChecks(
 ): Promise<SignalRow[]> {
   if (!llm) {
     return [
-      naSignal("title_description_consistency", W.titleDescription, { sampled: [], reason: "llm_not_configured" }),
-      naSignal("discovery_attributes_enrichment", W.discoveryAttributes, { coverage_score: null, missing_attribute_types: [], reason: "llm_not_configured" }),
+      naSignal("title_description_consistency", { sampled: [], reason: "llm_not_configured" }),
+      naSignal("discovery_attributes_enrichment", { coverage_score: null, missing_attribute_types: [], reason: "llm_not_configured" }),
     ];
   }
   if (!feed || feed.items.length === 0) {

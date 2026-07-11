@@ -24,24 +24,9 @@
  */
 
 import type { SignalRow, Fetcher } from "./manifestChecks.ts";
+import { getDef, contribution } from "./signalDefinitions.ts";
 
-const CATEGORY = "product_data_hygiene";
 const FEED_FETCH_TIMEOUT_MS = 10000; // feeds can be large; more generous than the manifest's 5s
-
-// Weight/impact/effort for the signals implemented in this slice. Category 2 is
-// the pillar's highest weight class (0.30); the remaining 5 signals' weights are
-// reserved for when product_id/price/availability/title/discovery checks land,
-// so the category's total stays proportionate once complete.
-const W = {
-  feedAvailable: { weight: 2.0, impact: 5, effort: 2 },
-  nativeCommerce: { weight: 2.0, impact: 5, effort: 2 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -226,7 +211,7 @@ export async function fetchFeed(feedUrl: string, fetcher: Fetcher, rootUrl?: str
 
 /** `feed` is null when no feed_url was configured at onboarding — the gate. */
 export function sig_feed_available(feed: FeedState | null): SignalRow {
-  const cfg = W.feedAvailable;
+  const def = getDef("feed_available");
   let status: SignalRow["status"];
   let fix: string | null = null;
 
@@ -250,14 +235,14 @@ export function sig_feed_available(feed: FeedState | null): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "feed_available",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: feed
       ? {
           feed_url: feed.url,
@@ -282,7 +267,7 @@ export function truthy(v: unknown): boolean {
  *  parseable) drops this to not_applicable rather than penalizing a store we
  *  simply couldn't check. */
 export function sig_native_commerce_attribute(feed: FeedState | null): SignalRow {
-  const cfg = W.nativeCommerce;
+  const def = getDef("native_commerce_attribute");
   let status: SignalRow["status"];
   let fix: string | null = null;
   let withAttr = 0;
@@ -304,14 +289,14 @@ export function sig_native_commerce_attribute(feed: FeedState | null): SignalRow
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "native_commerce_attribute",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { products_with_attr: withAttr, products_total: total, external_gate: true },
     fix_summary: fix,
   };

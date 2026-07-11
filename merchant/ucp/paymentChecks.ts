@@ -21,20 +21,7 @@
  */
 
 import type { SignalRow, ManifestState } from "./manifestChecks.ts";
-
-const CATEGORY = "payment_ap2_readiness";
-
-const W = {
-  ap2Compatibility: { weight: 2.5, impact: 4, effort: 4 },
-  credentialSecurity: { weight: 2.0, impact: 3, effort: 4 },
-  merchantOfRecord: { weight: 1.5, impact: 2, effort: 2 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing
-}
+import { getDef, contribution } from "./signalDefinitions.ts";
 
 function paymentHandlerEntries(m: ManifestState): Array<{ key: string; entry: any }> {
   const handlers = m.parsed?.ucp?.payment_handlers;
@@ -51,7 +38,7 @@ function paymentHandlerEntries(m: ManifestState): Array<{ key: string; entry: an
 const AP2_HINT_RE = /\bap2\b|agent[- ]payments?[- ]protocol/i;
 
 export function sig_ap2_compatibility_declared(m: ManifestState): SignalRow {
-  const cfg = W.ap2Compatibility;
+  const def = getDef("ap2_compatibility_declared");
   const handlers = paymentHandlerEntries(m);
   const declared = handlers.length > 0;
   const ap2Mentioned = handlers.some(({ entry }) => AP2_HINT_RE.test(JSON.stringify(entry ?? {})));
@@ -69,33 +56,33 @@ export function sig_ap2_compatibility_declared(m: ManifestState): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "ap2_compatibility_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { payment_handlers: handlers.map((h) => h.key), ap2_declared: ap2Mentioned, external_gate: true },
     fix_summary: fix,
   };
 }
 
 export function sig_credential_security_posture(m: ManifestState): SignalRow {
-  const cfg = W.credentialSecurity;
+  const def = getDef("credential_security_posture");
   const handlers = paymentHandlerEntries(m);
 
   if (handlers.length === 0) {
     return {
-      pillar: "ucp",
-      category: CATEGORY,
-      signal_key: "credential_security_posture",
+      pillar: def.pillar,
+      category: def.category,
+      signal_key: def.signal_key,
       status: "not_applicable",
-      weight: cfg.weight,
+      weight: def.weight,
       score_contribution: 0,
-      impact: cfg.impact,
-      effort: cfg.effort,
+      impact: def.impact,
+      effort: def.effort,
       evidence_json: { tokenization_referenced: false, external_gate: true, observable: false },
       fix_summary: null,
     };
@@ -117,30 +104,30 @@ export function sig_credential_security_posture(m: ManifestState): SignalRow {
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "credential_security_posture",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { tokenization_referenced: tokenizationReferenced, external_gate: true, observable: true },
     fix_summary: fix,
   };
 }
 
 export function sig_merchant_of_record_declared(): SignalRow {
-  const cfg = W.merchantOfRecord;
+  const def = getDef("merchant_of_record_declared");
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "merchant_of_record_declared",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status: "not_applicable",
-    weight: cfg.weight,
+    weight: def.weight,
     score_contribution: 0,
-    impact: cfg.impact,
-    effort: cfg.effort,
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { mor_signal: null, observable: false },
     fix_summary: null,
   };

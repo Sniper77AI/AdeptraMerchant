@@ -23,19 +23,7 @@
  */
 
 import type { SignalRow } from "./manifestChecks.ts";
-
-const CATEGORY = "merchant_center_eligibility";
-
-const W = {
-  accountReady: { weight: 0, impact: 5, effort: 2 },
-  earlyAccess: { weight: 0, impact: 4, effort: 1 },
-} as const;
-
-function contribution(weight: number, status: SignalRow["status"]): number {
-  if (status === "pass") return weight;
-  if (status === "partial") return weight / 2;
-  return 0; // fail or not_applicable earn nothing (weight is 0 here regardless)
-}
+import { getDef, contribution } from "./signalDefinitions.ts";
 
 export interface MerchantCenterAttestation {
   accountReady: boolean | null; // null = not attested yet
@@ -44,7 +32,7 @@ export interface MerchantCenterAttestation {
 }
 
 export function sig_merchant_center_account_ready(a: MerchantCenterAttestation): SignalRow {
-  const cfg = W.accountReady;
+  const def = getDef("merchant_center_account_ready");
   let status: SignalRow["status"];
   let fix: string | null = null;
 
@@ -61,21 +49,21 @@ export function sig_merchant_center_account_ready(a: MerchantCenterAttestation):
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "merchant_center_account_ready",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { attested: a.accountReady, feeds_configured: a.feedsConfigured, external_gate: true },
     fix_summary: fix,
   };
 }
 
 export function sig_ucp_early_access_status(a: MerchantCenterAttestation): SignalRow {
-  const cfg = W.earlyAccess;
+  const def = getDef("ucp_early_access_status");
   let status: SignalRow["status"];
   let fix: string | null = null;
 
@@ -92,14 +80,14 @@ export function sig_ucp_early_access_status(a: MerchantCenterAttestation): Signa
   }
 
   return {
-    pillar: "ucp",
-    category: CATEGORY,
-    signal_key: "ucp_early_access_status",
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
     status,
-    weight: cfg.weight,
-    score_contribution: contribution(cfg.weight, status),
-    impact: cfg.impact,
-    effort: cfg.effort,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
     evidence_json: { status: a.earlyAccessStatus, region_eligible: null, external_gate: true }, // region_eligible: not modeled yet
     fix_summary: fix,
   };
