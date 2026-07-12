@@ -3,9 +3,16 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/server";
+import { fetchRunBundleDataRLS } from "@/lib/merchant/runBundle";
+import { checkEntitlementRLS } from "@/lib/merchant/entitlement";
+import { PillarCard } from "@/components/pillar-card";
+import { ArtifactList } from "@/components/artifact-list";
+import { Badge } from "@/components/ui/badge";
+import { buildModel, pillarDisplayName, canonicalPillarOrder } from "../../../../merchant/ucp/export/reportModel.ts";
 
 interface SiteRow {
   id: string;
+  client_id: string;
   domain: string | null;
   root_url: string;
   platform: string | null;
@@ -17,6 +24,19 @@ interface RunRow {
   started_at: string;
   completed_at: string | null;
   error_detail: string | null;
+}
+
+interface RunHistoryRow {
+  id: string;
+  status: RunRow["status"];
+  started_at: string;
+}
+
+interface PillarScoreRow {
+  pillar: string;
+  score: number;
+  signals_passed: number;
+  signals_total: number;
 }
 
 /** Uncached dynamic data (auth + the site/run reads) inside Suspense — same
@@ -37,8 +57,9 @@ async function StoreStatus({ params }: { params: Promise<{ siteId: string }> }) 
   // Both reads go through the user's own RLS-scoped client (anon key + their
   // session) — never service-role. sites_select / runs_select are both
   // scoped via user_client_ids()/user_site_ids(), so a site or run this user
-  // doesn't own simply won't come back, same as a genuine 404.
-  const { data: site } = await supabase.from("sites").select("id, domain, root_url, platform").eq("id", siteId).maybeSingle<SiteRow>();
+  // doesn't own simply won't come back, same as a genuine 404 — RLS itself
+  // does the not-found-vs-error collapsing, not UI-side hiding.
+  const { data: site } = await supabase.from("sites").select("id, client_id, domain, root_url, platform").eq("id", siteId).maybeSingle<SiteRow>();
 
   if (!site) {
     return (
@@ -51,16 +72,29 @@ async function StoreStatus({ params }: { params: Promise<{ siteId: string }> }) 
     );
   }
 
-  const { data: run } = await supabase
-    .from("analysis_runs")
-    .select("id, status, started_at, completed_at, error_detail")
-    .eq("site_id", siteId)
-    .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle<RunRow>();
+  const [{ data: run }, { data: historyRuns }] = await Promise.all([
+    supabase.from("analysis_runs").select("id, status, started_at, completed_at, error_detail").eq("site_id", siteId).order("started_at", { ascending: false }).limit(1).maybeSingle<RunRow>(),
+    supabase.from("analysis_runs").select("id, status, started_at").eq("site_id", siteId).order("started_at", { ascending: false }).returns<RunHistoryRow[]>(),
+  ]);
+
+  // Run history: pillar_scores for every run of this site, batched in one
+  // query rather than one round trip per run, then grouped client-side.
+  const runIds = (historyRuns ?? []).map((r) => r.id);
+  const { data: historyPillars } =
+    runIds.length > 0
+      ? await supabase.from("pillar_scores").select("run_id, pillar, score, signals_passed, signals_total").in("run_id", runIds).returns<Array<PillarScoreRow & { run_id: string }>>()
+      : { data: [] as Array<PillarScoreRow & { run_id: string }> };
+  const pillarsByRun = new Map<string, PillarScoreRow[]>();
+  for (const p of historyPillars ?? []) {
+    const arr = pillarsByRun.get(p.run_id) ?? [];
+    arr.push(p);
+    pillarsByRun.set(p.run_id, arr);
+  }
+
+  const showFullReport = run && (run.status === "complete" || run.status === "no_manifest");
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-bold">{site.domain ?? site.root_url}</h1>
         <p className="text-sm text-muted-foreground">{site.root_url}</p>
@@ -85,14 +119,81 @@ async function StoreStatus({ params }: { params: Promise<{ siteId: string }> }) 
             Retry
           </Link>
         </div>
-      ) : (
-        <div className="rounded-md border p-4">
-          <p className="font-medium">Analysis complete{run.status === "no_manifest" ? " — no UCP manifest found" : ""}.</p>
-          <p className="text-sm text-muted-foreground">
-            Completed {run.completed_at ? new Date(run.completed_at).toLocaleString() : "—"}. The full results view is coming in a later stage.
-          </p>
-        </div>
-      )}
+      ) : null}
+
+      {showFullReport && run && <FullReport runId={run.id} siteId={site.id} clientId={site.client_id} />}
+
+      <div>
+        <h2 className="text-lg font-semibold mb-2">Run history</h2>
+        {(historyRuns ?? []).length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">No runs yet.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {(historyRuns ?? []).map((r) => {
+              const pillars = pillarsByRun.get(r.id) ?? [];
+              return (
+                <li key={r.id} className="flex items-center gap-3 text-sm border-b pb-2">
+                  <span className="text-muted-foreground w-40 shrink-0">{new Date(r.started_at).toLocaleString()}</span>
+                  <Badge variant={r.status === "failed" ? "destructive" : r.status === "running" || r.status === "queued" ? "secondary" : "default"}>{r.status}</Badge>
+                  <span className="text-muted-foreground">
+                    {pillars.length === 0
+                      ? "—"
+                      : canonicalPillarOrder(pillars.map((p) => p.pillar))
+                          .map((key) => pillars.find((p) => p.pillar === key)!)
+                          .map((p) => `${pillarDisplayName(p.pillar)} ${p.score}%`)
+                          .join(" · ")}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The full ReportModel — pillar cards, what's-working/to-fix, generated
+ *  fixes, fix-bundle gate. Built from the SAME buildModel() the downloadable
+ *  report uses, over data assembled from the user's own RLS reads. */
+async function FullReport({ runId, siteId, clientId }: { runId: string; siteId: string; clientId: string }) {
+  const supabase = await createClient();
+  const bundleData = await fetchRunBundleDataRLS(supabase, runId);
+  if (!bundleData) return null; // shouldn't happen — this run was just read above
+
+  const model = buildModel(bundleData);
+  const entitled = await checkEntitlementRLS(supabase, clientId, siteId);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap gap-4">
+        {model.pillars.map((p) => {
+          const section = model.sections.find((s) => s.pillar === p.pillar);
+          return section ? <PillarCard key={p.pillar} pillar={p} section={section} hasManifest={model.hasManifest} /> : null;
+        })}
+      </div>
+
+      <div>
+        <h2 className="text-lg font-semibold mb-2">Your generated fixes</h2>
+        <ArtifactList artifacts={model.artifacts} />
+      </div>
+
+      <div className="rounded-lg border p-4">
+        {entitled ? (
+          // Points at the merchant backend's own proxy route (never a raw
+          // signed Storage URL) — see merchant/api/bundle/[runId].ts. That
+          // route re-checks isEntitled() itself server-side; this link is
+          // never the thing enforcing access.
+          <a href={`/api/bundle/${runId}`} className="font-medium underline underline-offset-4">
+            ⬇ Download fix package
+          </a>
+        ) : (
+          <div>
+            <p className="font-medium">🔒 Unlock fix package</p>
+            <p className="text-sm text-muted-foreground">The report above is free. Downloading the generated fix files is a paid feature — billing isn&apos;t live yet.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

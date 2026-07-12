@@ -634,7 +634,7 @@ isn't wired to anything real.
 live-verified against two real stores (skims.com, gymshark.com). A second, independent pillar —
 `agent_readability` (10 signals) — is now also implemented, tested, and live-verified.**
 
-- [x] **`dashboard/` — Next.js customer-facing app, Stages 1 + 2 (2026-07-11/12).** Separate
+- [x] **`dashboard/` — Next.js customer-facing app, Stages 1 + 2 + 3 (2026-07-11/12).** Separate
       top-level app (own `package.json`/deps/build), scaffolded from Supabase's official
       `create-next-app -e with-supabase` template (Next.js 16.2.10, `@supabase/ssr` 0.12.0 —
       pinned, not left floating on `"latest"`). **Stage 1**: auth foundation only — signup, email
@@ -697,6 +697,55 @@ live-verified against two real stores (skims.com, gymshark.com). A second, indep
       scanning `.next/static` for both the literal secret value and the bare env-var name (zero
       hits for either) — cross-checked against the same scan finding the public anon key once,
       confirming the scan methodology itself isn't a false negative.
+      **Stage 3**: My Stores + the full store view, sharing one pure report model with the
+      downloadable export so dashboard and export can never diverge. Extracted
+      `merchant/ucp/export/reportModel.ts` out of `reportBuilder.ts` — every type/function
+      `buildModel` needs (`RunBundleData`/`RunBundleSignal`/`RunBundleArtifact`,
+      `ReportModel`/`PillarSection`/`ReportArtifact`, `buildModel`/`buildSections`,
+      `canonicalPillarOrder`/`pillarDisplayName`/`typeDisplayName`/`filenameForArtifact`, the
+      pillar display-name/description/order constants) — leaving only HTML/markdown string
+      rendering behind in `reportBuilder.ts`, which now imports the model and re-exports it
+      wholesale (`export * from "./reportModel.ts"`) so every existing external import
+      (`supabaseSink.ts`, `test_export.ts`) keeps working unchanged. No dedicated report
+      golden-fixture harness existed before this (only `test_export.ts`'s inline assertions) —
+      added `test_reportBuilder_golden.ts` (capture/verify, same discipline as
+      `test_pageChecks_golden.ts`), captured *before* the extraction, verified **byte-identical**
+      after, across three representative shapes (complete run, `no_manifest` framing, a
+      multi-file-tree artifact). The dashboard builds a `RunBundleData`-shaped object from its own
+      RLS-scoped reads (`dashboard/lib/merchant/runBundle.ts`, mirroring
+      `supabaseSink.ts`'s `fetchRunBundleData` exactly, including the `signal_evidence` join by
+      `signal_key` — confirmed that table's SELECT policy is unconditionally `true` for any
+      authenticated user, since it's global reference data, not tenant-scoped) and calls the SAME
+      `buildModel()` the export uses — one source of truth for grouping/sorting/framing, enforced
+      by construction, not convention. New `/stores` (My Stores: each site's domain/platform +
+      latest run's compact "Searchable NN% · Buyable NN%" — deliberately distinct short labels
+      from the full view's formal `PILLAR_DISPLAY_NAMES`, matching the report's own prose
+      shorthand) and the extended `/stores/[siteId]` (two pillar cards, what's-working/what-to-fix
+      per pillar with priority order and evidence notes, the generated-fixes list with full
+      changelogs, a run-history list, and a locked/unlocked fix-bundle section). The fix-bundle
+      gate reads `subscriptions` directly via RLS (`dashboard/lib/merchant/entitlement.ts`),
+      deliberately mirroring the exact criteria `pipeline.ts`'s `isEntitled()` docstring already
+      specifies for its own future real implementation (`status IN ('trialing','active')`) —
+      without touching that function, whose own comment says "do not build that query yet" (that
+      instruction scopes the *server-side enforcement* path; this is a read-only UI hint with zero
+      enforcement power). No subscriptions rows exist for any client yet, so this always evaluates
+      `false` today — "locked by default" falls out of real (currently empty) data, not a
+      hardcoded stub, and both sides will agree by construction once billing lands. The bundle
+      proxy route's own `isEntitled()` stays the sole real gate; the dashboard never bypasses it.
+      Not-found-vs-error: an RLS-scoped `.select().maybeSingle()` on a site the user doesn't own
+      returns `null` exactly like a nonexistent id — confirmed empirically, not assumed, by loading
+      both a real other-owner's site and a fabricated random UUID and diffing the rendered output
+      (byte-identical). Live-verified end-to-end: My Stores showed "Searchable 85.71% · Buyable
+      13.78%"; the full store view showed the identical two pillar scores plus a fully populated
+      what-to-fix list (priority-ordered, with the `robots_txt_valid`/`sitemap_present` evidence
+      notes rendering their `basis`) and all four generated-fix artifacts with complete
+      changelogs; the fix bundle correctly showed 🔒 locked. Independently confirmed against
+      Supabase: the store view's numbers equal `pillar_scores` for that run exactly (`85.71`/`4/6`,
+      `13.78`/`2/13` — zero recomputation drift); RLS isolation re-verified per-table
+      (`signals`/`pillar_scores`/`artifacts`/`sites`) via a simulated second user, zero rows on
+      all four; the service-role key remains absent from the production client bundle even with
+      the new `merchant/ucp` imports (same value + bare-name scan as Stage 2, zero hits, anon key
+      still found once as the methodology sanity check).
 
 - [x] **Signal-definition guardrail: weight/impact/effort drift made impossible-by-construction
       (2026-07-11).** Inventory (grepping every `function contribution` across `merchant/ucp/`) found
