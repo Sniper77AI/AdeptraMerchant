@@ -50,7 +50,13 @@ async function uploadObject(cfg: SupabaseConfig, path: string, bytes: Buffer, co
       "x-upsert": "true", // re-exporting the same run overwrites rather than 409s
       ...(contentDisposition ? { "content-disposition": contentDisposition } : {}),
     },
-    body: bytes,
+    // Buffer IS a Uint8Array at runtime (Node's fetch accepts it directly);
+    // this cast is purely for TypeScript's benefit when this file is type-
+    // checked from a consumer whose "lib" includes "dom" (e.g. the
+    // dashboard's Next.js build) — the DOM BodyInit type doesn't statically
+    // know about Node's Buffer, even though it's a valid Uint8Array. Zero
+    // runtime behavior change.
+    body: bytes as BodyInit,
   });
   if (!res.ok) {
     const text = await res.text();

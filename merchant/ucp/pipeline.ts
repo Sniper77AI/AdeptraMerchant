@@ -56,6 +56,7 @@ import {
   ensureClient,
   upsertIntakeSite,
   type SupabaseConfig,
+  type RunHandle,
 } from "./supabaseSink.ts";
 import { buildBundlePlan } from "./export/reportBuilder.ts";
 import { uploadAndRecordExport, downloadObject, reportPathFor, bundlePathFor } from "./export/storageSink.ts";
@@ -120,6 +121,16 @@ export interface AnalyzeInput {
   config: SupabaseConfig;
   openAiKey?: string; // optional, same LLM-degrades-to-not_applicable behavior as before
   onLog?: (msg: string) => void; // progress messages; defaults to no-op (callers decide whether/how to surface them)
+  // Optional: reuse an already-created analysis_runs row (status='running')
+  // instead of createRun()'ing a new one. For callers that need the running-
+  // state row to exist SYNCHRONOUSLY before this function is invoked — e.g.
+  // the dashboard's onboarding Server Action creates the run row before
+  // responding/redirecting, then defers this call into Next's after() so the
+  // pipeline keeps running past the response; the store view it redirects to
+  // must find a real 'running' row immediately, never a race against one that
+  // after() hasn't created yet. Existing callers (runLive.ts, analyze.ts)
+  // don't pass this — createRun() still runs exactly as before for them.
+  existingRunId?: string;
 }
 
 export interface AnalyzeResult {
@@ -139,12 +150,12 @@ export interface AnalyzeResult {
 }
 
 export async function runAnalysis(input: AnalyzeInput): Promise<AnalyzeResult> {
-  const { domain, siteId, config: cfg, openAiKey } = input;
+  const { domain, siteId, config: cfg, openAiKey, existingRunId } = input;
   const log = input.onLog ?? (() => {});
   const llm: LlmClient | null = openAiKey ? openAiClient(openAiKey) : null;
 
   const site = await getSite(cfg, siteId);
-  const run = await createRun(cfg, siteId);
+  const run: RunHandle = existingRunId ? { runId: existingRunId, siteId } : await createRun(cfg, siteId);
   log(`run:   ${run.runId} (running)`);
 
   try {

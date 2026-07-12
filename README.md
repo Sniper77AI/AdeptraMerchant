@@ -634,6 +634,70 @@ isn't wired to anything real.
 live-verified against two real stores (skims.com, gymshark.com). A second, independent pillar —
 `agent_readability` (10 signals) — is now also implemented, tested, and live-verified.**
 
+- [x] **`dashboard/` — Next.js customer-facing app, Stages 1 + 2 (2026-07-11/12).** Separate
+      top-level app (own `package.json`/deps/build), scaffolded from Supabase's official
+      `create-next-app -e with-supabase` template (Next.js 16.2.10, `@supabase/ssr` 0.12.0 —
+      pinned, not left floating on `"latest"`). **Stage 1**: auth foundation only — signup, email
+      verification, a single protected `/dashboard` placeholder gated on `getClaims()` (verifies
+      the access token's signature against our project's asymmetric ES256 JWKS; safe/non-spoofable
+      — confirmed by checking the project's actual `/.well-known/jwks.json`, not assumed from
+      Supabase's docs alone). **Stage 2**: the first real tenant-data write. `onboard_add_site()` —
+      a new `SECURITY DEFINER` Postgres function, mirroring `user_client_ids()`'s exact hardening
+      (`SET search_path = public`) — atomically bootstraps a user's first `clients` +
+      `client_members(role='owner')` row (or reuses their existing client) and upserts a `sites`
+      row by `(client_id, root_url)`. This is **not a convenience**, it's the only possible
+      bootstrap path: `clients` has zero INSERT policy under RLS, and `client_members`'s INSERT
+      policy requires the inserter to *already* be an owner/admin of that client — impossible for a
+      brand-new client's first-ever membership row. (The original schema migration's own comment
+      already flagged this exact "chicken-and-egg self-insert hole" as future work — this closes
+      it.) Caught live during verification: Postgres grants `EXECUTE` to `anon`/`authenticated`/
+      `service_role` directly via a platform-level `ALTER DEFAULT PRIVILEGES` on every new function
+      in `public` — a plain `REVOKE ALL ... FROM PUBLIC` does *not* touch those (they're granted to
+      each role individually, not via the `PUBLIC` pseudo-role), so `anon` still had `EXECUTE` after
+      the first migration; fixed forward with a second migration explicitly revoking it, verified
+      live via `information_schema.routine_privileges`.
+      The onboarding form (`/onboarding`, protected) submits through a Server Action that: (1) calls
+      `onboard_add_site` via the user's own SSR-cookie-scoped client (anon key + real session, so
+      `auth.uid()` resolves correctly — never service-role for this step); (2) synchronously creates
+      the `analysis_runs` row at `status='running'` (service-role — `analysis_runs` has no UPDATE
+      policy and `signals`/`pillar_scores`/`artifacts` have no INSERT policy for `authenticated`, so
+      the whole pipeline write path needs service-role regardless); (3) redirects instantly to
+      `/stores/<siteId>`, a status-aware stub reading the site + latest run under normal user-scoped
+      RLS. The actual pipeline run (`merchant/ucp/pipeline.ts`'s `runAnalysis` — unmodified logic,
+      only a new optional `existingRunId` param added so it can reuse the pre-created run row
+      instead of creating its own) is deferred into Next.js's `after()`, called from inside the
+      Server Action. This was a real architecture decision, not assumed: a bare fire-and-forget
+      promise in a Server Action has **no completion guarantee on Vercel serverless** — confirmed by
+      quoting Next.js's own docs, which describe `waitUntil()` (the primitive `after()` is built on)
+      as existing specifically to "extend the lifetime of a serverless invocation" that otherwise
+      ends once the response is sent. `after()` is stable since Next.js 15.1.0, explicitly supported
+      inside Server Functions, and Vercel wires the underlying `waitUntil` automatically — so this
+      stays architecturally correct without needing a second deployed HTTP endpoint. Also required
+      widening Turbopack's module resolution root (`turbopack.root` in `next.config.ts`) and adding
+      `allowImportingTsExtensions` to `dashboard/tsconfig.json`, since `merchant/ucp/*.ts` (imported
+      directly — it's zero-npm-dependency plain TS, no package boundary to cross) lives outside the
+      Next.js project root and uses explicit `.ts` import extensions; both were validated by an
+      actual production build, not assumed to work.
+      `analysis_runs.status` already included `'running'`/`'queued'` since the very first schema
+      migration (2026-07-03) and `createRun()` already wrote `'running'` before any check work
+      started, with the whole pipeline body already wrapped in try/catch calling `failRun()` on any
+      thrown error — the spec anticipated needing a new migration for this lifecycle; verifying
+      first found it was already fully correct, so no migration was written for it.
+      Live-verified end-to-end against a real store (WooCommerce's own official Storefront demo,
+      `themes.woocommerce.com`): the onboarding form → instant redirect to `/stores/<siteId>`
+      showing "Analysis in progress…" (the run row already existed — no race against `after()`'s
+      deferred start) → reload → "Analysis complete," ~3.8s later, 35 signals written (the full real
+      pipeline, not a stub). Verified directly in Supabase: exactly one new client/membership/site,
+      all fields matching the submitted form, zero new orphan clients (4 pre-existing orphans predate
+      `client_members`'s existence entirely — from the backend-only `ensureDevSite`/`ensureClient`
+      test paths in earlier sessions, confirmed by `created_at`); RLS isolation spot-checked
+      directly (`set local role authenticated; set local request.jwt.claim.sub = ...`) on `sites`/
+      `analysis_runs`/`signals` — the test user sees their own rows, a different simulated user sees
+      zero on all three; the service-role key confirmed absent from the built client bundle by
+      scanning `.next/static` for both the literal secret value and the bare env-var name (zero
+      hits for either) — cross-checked against the same scan finding the public anon key once,
+      confirming the scan methodology itself isn't a false negative.
+
 - [x] **Signal-definition guardrail: weight/impact/effort drift made impossible-by-construction
       (2026-07-11).** Inventory (grepping every `function contribution` across `merchant/ucp/`) found
       **nine** check modules each carrying its own local `W` weight/impact/effort object and its own
