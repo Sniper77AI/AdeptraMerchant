@@ -1,13 +1,22 @@
 /**
- * Golden-fixture regression lock for the reportModel.ts extraction (Stage 3):
- * proves moving the pure model (buildModel/buildSections/pillar display names/
- * etc.) out of reportBuilder.ts into its own module changed WHERE that logic
- * lives, not WHAT it renders. Captures buildBundlePlan()'s full output
- * (report_markdown + report_html + files[]) for three representative
- * RunBundleData shapes — a normal complete run, a no_manifest run (the
- * "hasn't started UCP" framing), and a multi-file-tree artifact (mcp_scaffold)
- * — before touching reportBuilder.ts, then verifies byte-for-byte equality
- * after. Same discipline as test_pageChecks_golden.ts / test_signal_values_golden.ts.
+ * Golden-fixture regression lock for reportBuilder.ts/reportModel.ts.
+ * Captures buildBundlePlan()'s full output (report_markdown + report_html +
+ * files[]) for four representative RunBundleData shapes and verifies
+ * byte-for-byte equality on every subsequent run. Same discipline as
+ * test_pageChecks_golden.ts / test_signal_values_golden.ts.
+ *
+ * Cases:
+ *  - complete / no_manifest / multi_file: originally captured for the Stage-3
+ *    reportModel.ts extraction (proving a pure refactor changed WHERE the
+ *    model lives, not WHAT it renders) — kept as an ongoing regression lock.
+ *  - with_advisory: added 2026-07-13 alongside the new
+ *    ucp_signing_keys_present signal and PillarSection's `advisories` bucket
+ *    — proves a not_applicable signal WITH a merchant_note surfaces as a
+ *    "Worth knowing" advisory instead of silently vanishing (see explicit
+ *    content assertions below; this is genuinely NEW captured content, not a
+ *    must-stay-identical case like the other three). Confirmed the OTHER
+ *    three cases stayed byte-identical after adding the advisories bucket —
+ *    empty advisories render nothing.
  *
  * Usage:
  *   node --experimental-strip-types test_reportBuilder_golden.ts capture
@@ -55,6 +64,29 @@ const COMPLETE_DATA: RunBundleData = {
 
 const NO_MANIFEST_DATA: RunBundleData = { ...COMPLETE_DATA, status: "no_manifest" };
 
+// Added 2026-07-13 alongside ucp_signing_keys_present: proves a not_applicable
+// signal WITH a merchant_note surfaces as a "Worth knowing" advisory (added to
+// PillarSection — see reportModel.ts) rather than silently vanishing, the way
+// every OTHER not_applicable signal without a note still does (no advisory
+// entry is added for those, unchanged behavior).
+const WITH_ADVISORY_DATA: RunBundleData = {
+  ...COMPLETE_DATA,
+  signals: [
+    ...COMPLETE_DATA.signals,
+    {
+      signal_key: "ucp_signing_keys_present",
+      pillar: "ucp",
+      category: "discovery_manifest",
+      status: "not_applicable",
+      weight: 1,
+      priority_score: 0,
+      fix_summary: null,
+      basis: "specified",
+      merchant_note: "Signed requests/responses let an AI shopping agent cryptographically verify a payload genuinely came from your store. Recommended for stores that want verifiable agent interactions.",
+    },
+  ],
+};
+
 const MULTI_FILE_DATA: RunBundleData = {
   ...COMPLETE_DATA,
   artifacts: [
@@ -83,8 +115,28 @@ function main() {
     complete: buildBundlePlan(COMPLETE_DATA),
     no_manifest: buildBundlePlan(NO_MANIFEST_DATA),
     multi_file: buildBundlePlan(MULTI_FILE_DATA),
+    with_advisory: buildBundlePlan(WITH_ADVISORY_DATA),
   };
   const serialized = JSON.stringify(cases, null, 2);
+
+  // Explicit content assertions for the advisory case — a byte-diff alone
+  // doesn't self-document WHY this case exists; these make the intent
+  // checkable without decoding the captured JSON.
+  let advisoryChecksFailed = 0;
+  const advisoryCheck = (name: string, cond: boolean) => {
+    console.log(`${cond ? "✅" : "❌"} ${name}`);
+    if (!cond) advisoryChecksFailed++;
+  };
+  const advisoryPlan = cases.with_advisory;
+  advisoryCheck("advisory: markdown shows 'Worth knowing' section", advisoryPlan.report_markdown.includes("### Worth knowing"));
+  advisoryCheck("advisory: markdown shows the signal_key and merchant_note", advisoryPlan.report_markdown.includes("ucp_signing_keys_present") && advisoryPlan.report_markdown.includes("Recommended for stores that want verifiable agent interactions"));
+  advisoryCheck("advisory: html shows 'Worth knowing' heading", advisoryPlan.report_html.includes("Worth knowing"));
+  advisoryCheck("advisory: html shows the signal_key and merchant_note", advisoryPlan.report_html.includes("ucp_signing_keys_present") && advisoryPlan.report_html.includes("Recommended for stores that want verifiable agent interactions"));
+  advisoryCheck("advisory: the OTHER three cases (no advisory signals) show no 'Worth knowing' section", !cases.complete.report_markdown.includes("Worth knowing") && !cases.no_manifest.report_markdown.includes("Worth knowing") && !cases.multi_file.report_markdown.includes("Worth knowing"));
+  if (advisoryChecksFailed > 0) {
+    console.error(`❌ ${advisoryChecksFailed} advisory content check(s) failed.`);
+    process.exit(1);
+  }
 
   if (mode === "capture") {
     writeFileSync(FIXTURE_PATH, serialized + "\n");

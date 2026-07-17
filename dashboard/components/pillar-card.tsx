@@ -65,6 +65,22 @@ export function PillarCard({ pillar, section, hasManifest }: { pillar: PillarSco
           </ol>
         )}
       </div>
+
+      {section.advisories.length > 0 && (
+        <div className="mt-4">
+          <div className="text-xs font-semibold uppercase text-muted-foreground mb-1">Worth knowing</div>
+          <ul className="text-sm space-y-2">
+            {section.advisories.map((s) => (
+              <li key={s.signal_key}>
+                <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">{s.signal_key}</span>
+                <p className="text-xs text-muted-foreground mt-1">
+                  <strong>({s.basis ?? "unspecified"}):</strong> {s.merchant_note}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

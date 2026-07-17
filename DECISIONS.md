@@ -160,21 +160,29 @@ you can trust," which requires every number to trace to a signal row.
 drift from the signals underneath.
 
 ### D-024 — Signal weight/impact/effort/pillar/category live in ONE canonical source
-**Decided.** All 35 signals' definitions live in `signalDefinitions.ts`, read via
-`getDef()`. No check module declares its own weights. A permanent guardrail
-(`test_signal_definitions.ts`) asserts emitted signals match declared definitions
-both ways, and that the zero-weight set is exactly
-`{merchant_center_account_ready, ucp_early_access_status}`.
+**Decided.** All signals' definitions (36 as of 2026-07-13) live in
+`signalDefinitions.ts`, read via `getDef()`. No check module declares its own
+weights. A permanent guardrail (`test_signal_definitions.ts`) asserts emitted
+signals match declared definitions both ways, and that the zero-weight set is
+exactly `{merchant_center_account_ready, ucp_early_access_status}`.
 **Why.** Weights were previously scattered across nine local `W` objects; seven
 signals had silently drifted (e.g. `robots_txt_valid` 1.0→1.5). One canonical
 source makes drift impossible-by-construction: a weight can't change in a check
 function (it comes from `getDef()`) or in the canonical source (the guardrail
-catches it in review).
+catches it in review). Verified live (2026-07-13, adding `ucp_signing_keys_present`):
+temporarily landing a new signal's definition without wiring it into its
+orchestrator (or vice versa) correctly reddens the guardrail — confirmed by
+negative control, not assumed.
 **Rejected.** Per-module weight tables. Never reintroduce a local weight literal.
 **Note on provenance.** UCP weights were never externally spec'd as numbers
-("proportional to impact" — a frozen design choice). `agent_readability` weights
+("proportional to impact" — a frozen design choice). New UCP signals' weights
+are reconciled against their category siblings at add-time (e.g.
+`ucp_signing_keys_present` landed at the same weight/impact/effort tier as
+`ucp_namespace_authority_valid` — both spec-correctness details, not
+core-discovery blockers), not invented in isolation. `agent_readability` weights
 *were* spec'd and reconciled 2026-07-10. The canonical file's header documents
-which is which — don't treat UCP's numbers as externally validated.
+which pillar's numbers are validated against what — don't treat UCP's numbers as
+externally validated.
 
 ### D-025 — `analysis_runs` are immutable; never rewrite history
 **Decided.** Re-running an analysis creates a *new* run. No past run's scores are
@@ -231,6 +239,25 @@ infer intent from platform or from robots.txt contents.
 guardrail applies to artifacts: never silently make a merchant-preference decision
 for them (feed_fix always flags REVIEW; robots_patch never auto-toggles
 GPTBot/ClaudeBot).
+
+### D-090 — A2A is a complementary transport/coordination layer, not a UCP competitor
+**Decided.** A2A (Agent2Agent) is treated as a peer-coordination + transport layer
+that sits *alongside* UCP, not as a rival protocol to chase or defend against. UCP
+itself lists A2A as a recognized transport (rest / mcp / a2a / embedded) as of spec
+v2026-04-08. Our manifest checks already accept `a2a` as a valid transport
+(`ALLOWED_TRANSPORTS` in manifestChecks.ts), so a store declaring A2A transport
+scores correctly today with no new work.
+**Why.** The protocols are complementary: MCP = agent-to-tool, UCP = the commerce
+layer (our product), A2A = agent-to-agent coordination, AP2 = payment (never ours,
+D-010). A2A is one transport option *within* the UCP world we already serve, not a
+separate thing to build for.
+**Rejected.** Opening an A2A workstream now. Real-world commerce adoption of A2A as
+a UCP transport is currently ~zero (no verified store declares it), so building
+A2A-specific scoring would violate the same evidence discipline that keeps
+`aeo_geo` empty (D-020). A2A-transport conformance for our own generated scaffolds
+is tracked as part of the transport-conformance item (ROADMAP Phase 3), a sibling
+of the known HTTP-streaming gap — and, like that gap, it never implies
+`complete_checkout` (D-010).
 
 ---
 

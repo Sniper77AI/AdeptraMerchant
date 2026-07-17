@@ -6,8 +6,11 @@
  * function directly (these are pure — no need to route through full
  * HTTP-mocked orchestrators just to prove a value didn't move) with minimal,
  * deterministic mock inputs, and captures the FULL emitted SignalRow for all
- * 35 signals across both pillars — not just the 5-tuple, so a refactor typo
+ * 36 signals across both pillars — not just the 5-tuple, so a refactor typo
  * that perturbed evidence_json/status/fix_summary would also be caught.
+ * (35 -> 36, 2026-07-13: ucp_signing_keys_present added — v2026-04-08
+ * spec-delta patch. RICH_MANIFEST has no signing_keys anywhere, so it
+ * captures the not_applicable/advisory branch.)
  *
  * `capture` was run BEFORE any check-module file was touched (against the
  * nine still-scattered `W` objects). `verify` runs after the refactor and
@@ -21,7 +24,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import type { SignalRow, ManifestState, Fetcher, FetchResult } from "./manifestChecks.ts";
-import { sig_manifest_present, sig_version_declared, sig_services_declared, sig_namespace_authority_valid } from "./manifestChecks.ts";
+import { sig_manifest_present, sig_version_declared, sig_services_declared, sig_namespace_authority_valid, sig_signing_keys_present } from "./manifestChecks.ts";
 import {
   sig_capability_checkout_declared,
   sig_capability_cart_declared,
@@ -133,6 +136,7 @@ async function buildAllSignals(): Promise<SignalRow[]> {
     sig_version_declared(RICH_MANIFEST),
     sig_services_declared(RICH_MANIFEST),
     sig_namespace_authority_valid(RICH_MANIFEST),
+    sig_signing_keys_present(RICH_MANIFEST),
     // capabilityChecks.ts
     sig_capability_checkout_declared(RICH_MANIFEST),
     sig_capability_cart_declared(RICH_MANIFEST),
@@ -184,7 +188,7 @@ async function main() {
   }
 
   const rows = await buildAllSignals();
-  console.log(`Built ${rows.length} signals (expect 35).`);
+  console.log(`Built ${rows.length} signals (expect 36).`);
   const serialized = JSON.stringify(rows, null, 2);
 
   if (mode === "capture") {

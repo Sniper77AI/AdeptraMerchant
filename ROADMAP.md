@@ -16,7 +16,7 @@
 
 ## Current state (one line)
 
-Backend engine complete and live-verified (35 signals, 2 pillars, 7 artifact
+Backend engine complete and live-verified (36 signals, 2 pillars, 7 artifact
 generators, export/delivery). Dashboard Stages 1–3 shipped (auth, onboarding +
 triggered analysis, My Stores + full store view). **Billing is designed but not
 built.** No customers yet (by choice — see `DECISIONS.md` D-005).
@@ -68,6 +68,16 @@ onboarding form writes some of them; a complete attestation UI (all three opt-ou
 with plain-English labels, feed URL, Category 6) is still partial.
 - `[~]` Stage 2 form writes url/platform/feed/opt-outs; verify full coverage and
   fill gaps.
+
+### [ ] Scoped audit of the rest of v2026-04-08's UCP additions
+The signing-keys signal and `embedded` transport (the two concrete coverage gaps
+from the 2026-07-13 spec-delta patch — see README Status) are done. This is the
+remainder of that same dig, deliberately kept as its own separate, larger pass
+rather than folded in: first-class cart capability (already built via the
+catalog+cart profile — verify), the `intent` context field, `available_instruments`
+on payment handlers, multi-parent `extends`, first-class errors. Some of these may
+already be handled incidentally; some may be real gaps. Needs its own read/verify
+pass against the live spec before scoping signals.
 
 ### [ ] Human task — domain hardening (Squarespace)
 Confirm **auto-renew** and **transfer-lock** are on for `adeptra.ai`. Five-minute

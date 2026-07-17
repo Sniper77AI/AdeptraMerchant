@@ -83,6 +83,15 @@ const DEFINITIONS: SignalDefinition[] = [
   { signal_key: "ucp_manifest_version_declared", pillar: "ucp", category: "discovery_manifest", weight: 1.5, impact: 4, effort: 1 },
   { signal_key: "ucp_services_declared", pillar: "ucp", category: "discovery_manifest", weight: 2.5, impact: 5, effort: 3 },
   { signal_key: "ucp_namespace_authority_valid", pillar: "ucp", category: "discovery_manifest", weight: 1.0, impact: 3, effort: 1 },
+  // Added 2026-07-13 (v2026-04-08 spec-delta patch): weight/impact/effort
+  // reconciled against this category's other signals, not invented in
+  // isolation — same tier as ucp_namespace_authority_valid (a spec-
+  // correctness detail, not a core-discovery blocker like manifest_present/
+  // services_declared). impact 3: signing keys are a genuine trust/
+  // verification mechanism, not cosmetic, but absence doesn't block a
+  // transaction. effort 1: the fix is moving or adding an already-existing
+  // JSON array, not new engineering.
+  { signal_key: "ucp_signing_keys_present", pillar: "ucp", category: "discovery_manifest", weight: 1.0, impact: 3, effort: 1 },
 
   // --- capabilities (capabilityChecks.ts) ------------------------------------
   { signal_key: "capability_checkout_declared", pillar: "ucp", category: "capabilities", weight: 2.5, impact: 5, effort: 3 },

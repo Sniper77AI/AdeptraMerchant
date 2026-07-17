@@ -116,6 +116,20 @@ function renderMarkdown(model: ReportModel): string {
       });
     }
     lines.push("");
+
+    // Optional-but-recommended checks that don't apply/aren't declared —
+    // never counted against the score (not_applicable), but a note worth
+    // reading shouldn't silently vanish either. Only rendered when there's
+    // something to say — unlike What's working/What to fix, most runs won't
+    // have one.
+    if (section.advisories.length > 0) {
+      lines.push("### Worth knowing");
+      lines.push("");
+      for (const s of section.advisories) {
+        lines.push(`- **${s.signal_key}** — *(${s.basis ?? "unspecified"}):* ${s.merchant_note}`);
+      }
+      lines.push("");
+    }
   }
 
   lines.push("## Your generated fixes");
@@ -198,12 +212,19 @@ function renderHtml(model: ReportModel, downloadUrlToken: string | null): string
             .join("\n")
         : `<li class="muted">Nothing outstanding — every applicable check passes.</li>`;
 
+      const advisoryBlock = section.advisories.length
+        ? `<h3>Worth knowing</h3>
+  <ul>${section.advisories
+            .map((s) => `<li><span class="fix-key">${escapeHtml(s.signal_key)}</span><p class="evidence-note"><strong>(${escapeHtml(s.basis ?? "unspecified")}):</strong> ${escapeHtml(s.merchant_note ?? "")}</p></li>`)
+            .join("\n")}</ul>`
+        : "";
+
       return `<h2>${escapeHtml(section.displayName)}</h2>
   ${section.description ? `<p class="pillar-description">${escapeHtml(section.description)}</p>` : ""}
   <h3>What's working</h3>
   <ul>${passingItems}</ul>
   <h3>What to fix (in priority order)</h3>
-  <ul>${fixItems}</ul>`;
+  <ul>${fixItems}</ul>${advisoryBlock ? `\n  ${advisoryBlock}` : ""}`;
     })
     .join("\n\n");
 

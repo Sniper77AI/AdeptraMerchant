@@ -159,6 +159,14 @@ export interface PillarSection {
   description: string;
   passing: RunBundleSignal[];
   toFix: RunBundleSignal[]; // fail/partial, sorted by priority_score desc
+  // not_applicable signals that carry a merchant_note — an optional-but-
+  // recommended signal (e.g. ucp_signing_keys_present with no keys declared
+  // anywhere) genuinely isn't non-compliance, so it must not appear in toFix
+  // or drag the score, but a note worth reading shouldn't silently vanish
+  // either. Added 2026-07-13; deliberately distinct from OTHER not_applicable
+  // signals with no note (e.g. an attested opt-out) — those stay unlisted,
+  // exactly as before, since there's nothing to recommend.
+  advisories: RunBundleSignal[];
 }
 
 export interface ReportModel {
@@ -184,6 +192,7 @@ export function buildSections(data: RunBundleData): PillarSection[] {
         .filter((s) => s.status === "fail" || s.status === "partial")
         .slice()
         .sort((a, b) => b.priority_score - a.priority_score),
+      advisories: pillarSignals.filter((s) => s.status === "not_applicable" && !!s.merchant_note),
     };
   });
 }

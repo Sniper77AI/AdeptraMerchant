@@ -4,12 +4,13 @@
  * PORTABILITY CONTRACT (the whole point of how this is structured):
  *  - `fetchManifest` is the ONLY function that touches the network. It takes an
  *    injectable `fetcher`, so tests pass a mock and production passes real HTTP.
- *  - The four signal functions are PURE: (manifestState) -> SignalRow. No I/O.
+ *  - The five signal functions are PURE: (manifestState) -> SignalRow. No I/O.
  *  - Nothing here imports n8n or Supabase. It runs verbatim inside an n8n code
  *    node today and lifts into a standalone worker later, unchanged.
  *
  * Grounded against UCP spec version 2026-04-08 (ucp.dev) — real field names:
- *   ucp.version, ucp.services["dev.ucp.shopping"], ucp.capabilities, spec/schema URLs.
+ *   ucp.version, ucp.services["dev.ucp.shopping"], ucp.capabilities, spec/schema URLs,
+ *   signing_keys (document root, sibling of ucp — see sig_signing_keys_present).
  *
  * WEIGHT/IMPACT/EFFORT: each signal function reads its definition from
  * ./signalDefinitions.ts (getDef) rather than declaring its own literal —
@@ -79,7 +80,11 @@ export const CURRENT_UCP_VERSION = "2026-04-08";
 /** Legitimate namespace authority hosts for spec/schema URLs. */
 export const VALID_AUTHORITY_HOSTS = new Set(["ucp.dev"]);
 
-export const ALLOWED_TRANSPORTS = new Set(["rest", "mcp", "a2a"]);
+// v2026-04-08's four valid transports. "embedded" added 2026-07-13 — it was
+// missing from the original set, which meant a store correctly declaring it
+// was falsely penalized (sig_services_declared) and had it wrongly
+// downgraded to "rest" by the manifest-fix generator (manifestArtifact.ts).
+export const ALLOWED_TRANSPORTS = new Set(["rest", "mcp", "a2a", "embedded"]);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -336,6 +341,83 @@ export function sig_namespace_authority_valid(m: ManifestState): SignalRow {
   };
 }
 
+/** True JWK-shape check: a non-null object (not an array) with a string,
+ *  non-empty `kty` field. Presence + basic shape only — this is not real
+ *  cryptographic/algorithm validation (out of scope; see manifestChecks.ts's
+ *  sibling checks, e.g. endpoint_is_url just resolves a host, it doesn't
+ *  probe the endpoint). */
+function looksLikeJwk(x: unknown): boolean {
+  return !!x && typeof x === "object" && !Array.isArray(x) && typeof (x as any).kty === "string" && (x as any).kty.length > 0;
+}
+
+function isValidJwkArray(x: unknown): boolean {
+  return Array.isArray(x) && x.length > 0 && x.every(looksLikeJwk);
+}
+
+function hasArrayContent(x: unknown): boolean {
+  return Array.isArray(x) && x.length > 0;
+}
+
+/** v2026-04-08 moved signing_keys from nested `ucp.signing_keys` to the
+ *  document root (a sibling of `ucp`). Third-party validators report this
+ *  relocation as the #1 real-world validation defect — stores that upgraded
+ *  their declared ucp.version but never moved the array. OPTIONAL but
+ *  RECOMMENDED per spec: genuine absence is not non-compliance, so it scores
+ *  not_applicable (advisory via signal_evidence.merchant_note), never fail —
+ *  same pattern as sig_namespace_authority_valid's "nothing to check" case. */
+export function sig_signing_keys_present(m: ManifestState): SignalRow {
+  const def = getDef("ucp_signing_keys_present");
+  const rootKeys = m.parsed?.signing_keys;
+  const nestedKeys = m.parsed?.ucp?.signing_keys;
+
+  const rootPresent = rootKeys !== undefined && rootKeys !== null;
+  const nestedPresent = nestedKeys !== undefined && nestedKeys !== null;
+  const rootValid = isValidJwkArray(rootKeys);
+  // "absent/empty" per spec — undefined/null OR a present-but-empty array;
+  // any OTHER malformed root shape (string, non-empty array of bad objects)
+  // takes priority as "malformed", even if nested also has content.
+  const rootAbsentOrEmpty = !rootPresent || (Array.isArray(rootKeys) && rootKeys.length === 0);
+
+  let status: SignalRow["status"];
+  let fix: string | null = null;
+
+  if (rootValid) {
+    status = "pass";
+  } else if (hasArrayContent(nestedKeys) && rootAbsentOrEmpty) {
+    status = "partial";
+    fix =
+      "signing_keys are nested under `ucp` (pre-2026-04-08 location). v2026-04-08 requires them at the document root, as a sibling of `ucp`. Move the signing_keys array to the top level of the manifest.";
+  } else if (rootPresent) {
+    status = "partial";
+    fix = "signing_keys must be a non-empty array of JWK objects (each with at least a `kty` field).";
+  } else {
+    // No signing_keys anywhere. Advisory only — see signal_evidence.merchant_note.
+    status = "not_applicable";
+  }
+
+  const location: "root" | "nested" | "none" = rootPresent ? "root" : nestedPresent ? "nested" : "none";
+  const keyCount = rootPresent ? (Array.isArray(rootKeys) ? rootKeys.length : 0) : nestedPresent ? (Array.isArray(nestedKeys) ? nestedKeys.length : 0) : 0;
+
+  return {
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
+    status,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
+    evidence_json: {
+      root_present: rootPresent,
+      nested_present: nestedPresent,
+      root_is_valid_jwk_array: rootValid,
+      location,
+      key_count: keyCount,
+    },
+    fix_summary: fix,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator: fetch once, run all Category-1 signals, return rows.
 // ---------------------------------------------------------------------------
@@ -350,6 +432,7 @@ export async function runManifestChecks(domain: string, fetcher: Fetcher): Promi
     sig_version_declared(manifest),
     sig_services_declared(manifest),
     sig_namespace_authority_valid(manifest),
+    sig_signing_keys_present(manifest),
   ];
   return { manifest, signals };
 }

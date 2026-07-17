@@ -630,9 +630,57 @@ isn't wired to anything real.
 
 ## Status
 
-**All 25 UCP signals across all 6 categories in `signal-specs.md` are implemented, tested, and
+**All 26 UCP signals across all 6 categories in `signal-specs.md` are implemented, tested, and
 live-verified against two real stores (skims.com, gymshark.com). A second, independent pillar —
-`agent_readability` (10 signals) — is now also implemented, tested, and live-verified.**
+`agent_readability` (10 signals) — is now also implemented, tested, and live-verified. 36 signals total.**
+
+- [x] **UCP v2026-04-08 spec-delta patch: signing-keys signal + `embedded` transport
+      (2026-07-13).** A dig prompted by "where do we stand on A2A" (see `DECISIONS.md` D-090)
+      surfaced two real coverage gaps against the spec version the engine is already grounded on.
+      **26th UCP signal, `ucp_signing_keys_present`** (Category 1 — `discovery_manifest`, weight
+      1.0/impact 3/effort 1, reconciled against — and landing at the exact same tier as —
+      `ucp_namespace_authority_valid`, the category's other "spec-correctness, not core-discovery"
+      check): v2026-04-08 moved `signing_keys` from nested `ucp.signing_keys` to the **document
+      root** (a sibling of `ucp`); third-party validators report the still-nested location as the
+      #1 real-world validation defect. The signal's headline case detects exactly that — nested
+      keys present, root absent — and returns `partial` with an explicit "move to document root"
+      fix, distinct from a separately-detected `partial` for malformed root content (not an array,
+      empty, or objects missing `kty`). Absence of signing keys anywhere is `not_applicable`
+      (advisory, never `fail`) — the spec says optional-but-recommended, so absence must not drag
+      the score, per the same "nothing to check, drop from the denominator" pattern
+      `sig_namespace_authority_valid` already used. **`embedded` added to `ALLOWED_TRANSPORTS`**:
+      the spec's fourth valid transport was missing from the set entirely, which meant a store
+      correctly declaring it was falsely penalized (`sig_services_declared`) — and, caught during
+      verification, a store's *already-valid* `embedded` transport was being wrongly downgraded to
+      `"rest"` by the manifest-fix generator (`manifestArtifact.ts`), a second consumer of the same
+      constant the original ask didn't name. Both bugs share one fix. Live-verified against
+      skims.com's real manifest: it genuinely declares a service with `transport: "embedded"` —
+      unplanned, real-world confirmation that the fix is correctly recognized in production, not
+      just in synthetic tests (`transport_ok: true` in the signal's own evidence).
+      A real gap found during verification, not just the two named items: `reportModel.ts`'s
+      `PillarSection` had exactly two buckets, `passing` and `toFix` — a `not_applicable` signal,
+      even with a `signal_evidence.merchant_note`, fell into neither and was invisible in both the
+      downloadable report and the dashboard's store view (Stage 3 shares the same model across
+      both). Fixed by adding a third bucket, `advisories` (`not_applicable` signals that carry a
+      `merchant_note`, leaving every OTHER `not_applicable` signal — e.g. an attested opt-out —
+      unlisted exactly as before), rendered as a new "Worth knowing" section in markdown, HTML, and
+      the dashboard's pillar card. Caught and fixed a pure-whitespace regression this introduced in
+      the HTML template (a stray blank line even when the new section was empty) via the report
+      golden fixture's byte-diff — exactly what it's for. Guardrail discipline: verified
+      `test_signal_definitions.ts` actually reddens if the new signal is landed on only one side
+      (declared without being wired into the orchestrator, or vice versa) via a negative-control
+      check, then confirmed green with both sides landed together. Golden fixtures: the report
+      fixture's three pre-existing cases stayed **byte-identical** after the `advisories` addition
+      (none of their signals are `not_applicable` + noted, so the new bucket is always empty for
+      them) — confirmed via diff, not assumed; a fourth case, `with_advisory`, was added
+      specifically to prove the new section renders when populated, with explicit content
+      assertions plus a fresh golden capture. The signal-values golden fixture was recaptured
+      (35 → 36 signals) since this is a genuine, expected addition, not a refactor. Live-verified
+      end-to-end: re-ran analysis against both skims.com and gymshark.com — neither publishes
+      signing keys, so both correctly score `not_applicable` on the new signal (itself a valid
+      confirmation) — and confirmed via direct DB diff that **all 25 other UCP signals scored
+      byte-identically** before and after on both stores (status/weight/score_contribution
+      unchanged) — this was purely additive.
 
 - [x] **`dashboard/` — Next.js customer-facing app, Stages 1 + 2 + 3 (2026-07-11/12).** Separate
       top-level app (own `package.json`/deps/build), scaffolded from Supabase's official

@@ -638,5 +638,23 @@
       ]
     },
     "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
+    "category": "discovery_manifest",
+    "signal_key": "ucp_signing_keys_present",
+    "status": "not_applicable",
+    "weight": 1,
+    "score_contribution": 0,
+    "impact": 3,
+    "effort": 1,
+    "evidence_json": {
+      "root_present": false,
+      "nested_present": false,
+      "root_is_valid_jwk_array": false,
+      "location": "none",
+      "key_count": 0
+    },
+    "fix_summary": null
   }
 ]

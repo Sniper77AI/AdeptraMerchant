@@ -7,7 +7,7 @@
  * Run: node --experimental-strip-types test_live_pipeline.ts
  */
 
-import { runManifestChecks, isManifestMissing, type Fetcher, type ManifestState } from "./manifestChecks.ts";
+import { runManifestChecks, isManifestMissing, sig_services_declared, sig_signing_keys_present, type Fetcher, type ManifestState } from "./manifestChecks.ts";
 import {
   runCapabilityChecks,
   checkEndpointReachability,
@@ -1045,6 +1045,94 @@ const realFetch = globalThis.fetch;
 }
 
 globalThis.fetch = realFetch;
+
+// ---------------------------------------------------------------------------
+// 11. manifestChecks (Category 1: discovery_manifest) — signing_keys location/
+//     shape + embedded transport (v2026-04-08 spec-delta patch, 2026-07-13)
+// ---------------------------------------------------------------------------
+
+function mkManifest(parsed: any): ManifestState {
+  return {
+    url: "https://shop.example.com/.well-known/ucp",
+    reachable: true,
+    httpStatus: 200,
+    contentType: "application/json",
+    requiresAuth: false,
+    redirectChain: [],
+    isValidJson: true,
+    parsed,
+  };
+}
+
+const VALID_JWK = { kty: "EC", crv: "P-256", x: "abc", y: "def" };
+
+{
+  // PASS: valid non-empty JWK array at the document root.
+  const m = mkManifest({ ucp: { version: "2026-04-08" }, signing_keys: [VALID_JWK] });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: root valid JWK array -> pass", row.status === "pass", row);
+  check("signing_keys: pass evidence location=root, key_count=1", (row.evidence_json as any).location === "root" && (row.evidence_json as any).key_count === 1, row.evidence_json);
+}
+
+{
+  // PARTIAL (misplaced) — THE headline case: valid keys only at the
+  // pre-2026-04-08 nested location, nothing at root.
+  const m = mkManifest({ ucp: { version: "2026-04-08", signing_keys: [VALID_JWK] } });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: nested-only -> partial (misplaced)", row.status === "partial", row);
+  check("signing_keys: misplaced fix mentions moving to document root", !!row.fix_summary?.includes("document root"), row.fix_summary);
+  check("signing_keys: misplaced evidence location=nested", (row.evidence_json as any).location === "nested", row.evidence_json);
+}
+
+{
+  // PARTIAL (misplaced) — root present but empty, nested has real content.
+  const m = mkManifest({ ucp: { signing_keys: [VALID_JWK] }, signing_keys: [] });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: empty root + nested content -> partial (misplaced)", row.status === "partial" && row.fix_summary?.includes("document root"), row);
+}
+
+{
+  // PARTIAL (malformed) — root present but not an array at all.
+  const m = mkManifest({ ucp: {}, signing_keys: "not-an-array" });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: root non-array string -> partial (malformed)", row.status === "partial" && !!row.fix_summary?.includes("JWK objects"), row);
+}
+
+{
+  // PARTIAL (malformed) — root present as an empty array, nothing to rescue from nested.
+  const m = mkManifest({ ucp: {}, signing_keys: [] });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: empty root, no nested -> partial (malformed)", row.status === "partial" && !!row.fix_summary?.includes("JWK objects"), row);
+}
+
+{
+  // PARTIAL (malformed) — root array present but entries aren't JWK-shaped (missing kty).
+  const m = mkManifest({ ucp: {}, signing_keys: [{ foo: "bar" }] });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: root array missing kty -> partial (malformed)", row.status === "partial" && !!row.fix_summary?.includes("JWK objects"), row);
+}
+
+{
+  // NOT_APPLICABLE — genuinely nothing anywhere. Advisory only, never fail.
+  const m = mkManifest({ ucp: { version: "2026-04-08" } });
+  const row = sig_signing_keys_present(m);
+  check("signing_keys: absent everywhere -> not_applicable (never fail)", row.status === "not_applicable", row);
+  check("signing_keys: not_applicable earns zero score_contribution", row.score_contribution === 0, row);
+  check("signing_keys: not_applicable evidence location=none", (row.evidence_json as any).location === "none", row.evidence_json);
+}
+
+{
+  // embedded transport: previously falsely penalized (partial), now valid.
+  const m = mkManifest({
+    ucp: {
+      services: {
+        "dev.ucp.shopping": [{ version: "2026-04-08", transport: "embedded", endpoint: "https://shop.example.com/ucp/v1", schema: "https://ucp.dev/2026-04-08/schemas/shopping/rest.openapi.json" }],
+      },
+    },
+  });
+  const row = sig_services_declared(m);
+  check("services_declared: embedded transport treated as valid (same class as rest/mcp/a2a)", row.status === "pass", row);
+}
 
 console.log(failures === 0 ? "\nAll pipeline tests passed." : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
