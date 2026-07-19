@@ -13,6 +13,7 @@ import {
   checkEndpointReachability,
   sig_capability_catalog_declared,
   sig_capability_identity_linking_declared,
+  sig_capability_cart_declared,
 } from "./capabilityChecks.ts";
 import {
   runFeedChecks,
@@ -162,7 +163,12 @@ const FULL_CAPS_STATE: ManifestState = {
       },
       capabilities: {
         "dev.ucp.shopping.checkout": [{ version: "2026-04-08", schema: "https://ucp.dev/2026-04-08/schemas/shopping/checkout.json" }],
-        "dev.ucp.shopping.cart": [{ version: "2026-04-08" }],
+        // version+schema (not version-only) — FULL_CAPS_STATE means to
+        // represent a fully-conformant manifest; see the dedicated
+        // "capability_cart_declared: sibling-consistency" tests below for
+        // the version-only -> partial case this tightening (2026-07-14)
+        // introduced.
+        "dev.ucp.shopping.cart": [{ version: "2026-04-08", schema: "https://ucp.dev/2026-04-08/schemas/shopping/cart.json" }],
         "dev.ucp.shopping.catalog": [{ version: "2026-04-08" }],
         "dev.ucp.shopping.fulfillment": [{ version: "2026-04-08", schema: "https://ucp.dev/2026-04-08/schemas/shopping/fulfillment.json" }],
         "dev.ucp.common.identity_linking": [{ scopes: ["dev.ucp.shopping.order:read"] }],
@@ -192,7 +198,7 @@ const mockEndpointThrow: Fetcher = async () => {
   const signals = await runCapabilityChecks(FULL_CAPS_STATE, mockEndpointOk);
   const byKey = Object.fromEntries(signals.map((s) => [s.signal_key, s]));
   check("capabilities: checkout pass when version+schema present", byKey.capability_checkout_declared.status === "pass", byKey.capability_checkout_declared);
-  check("capabilities: cart pass when version present", byKey.capability_cart_declared.status === "pass", byKey.capability_cart_declared);
+  check("capabilities: cart pass when version+schema present", byKey.capability_cart_declared.status === "pass", byKey.capability_cart_declared);
   check("capabilities: catalog pass when declared", byKey.capability_catalog_declared.status === "pass", byKey.capability_catalog_declared);
   check("capabilities: fulfillment pass when version+schema present", byKey.capability_fulfillment_declared.status === "pass", byKey.capability_fulfillment_declared);
   check("capabilities: identity_linking pass when scopes present", byKey.capability_identity_linking_declared.status === "pass", byKey.capability_identity_linking_declared);
@@ -202,6 +208,38 @@ const mockEndpointThrow: Fetcher = async () => {
 {
   const signals = await runCapabilityChecks(EMPTY_CAPS_STATE, mockEndpointOk);
   check("capabilities: all six fail when nothing declared (incl. no-endpoint probe)", signals.every((s) => s.status === "fail"), signals);
+}
+
+{
+  // capability_cart_declared: sibling-consistency tightening (2026-07-14,
+  // v2026-04-08 spec-delta audit CHANGE 2) — brought into line with
+  // checkout/fulfillment's exact bar. THIS is the pair of tests proving the
+  // status logic actually moved, not just that FULL_CAPS_STATE's fixture
+  // was updated to keep passing.
+  const versionOnly: ManifestState = { ...EMPTY_CAPS_STATE, parsed: { ucp: { capabilities: { "dev.ucp.shopping.cart": [{ version: "2026-04-08" }] } } } };
+  const versionOnlySignal = sig_capability_cart_declared(versionOnly);
+  check("capability_cart_declared: version-only (no schema) -> partial (was pass before the tightening)", versionOnlySignal.status === "partial", versionOnlySignal);
+  check("capability_cart_declared: version-only partial fix mentions the missing schema URL", !!versionOnlySignal.fix_summary?.includes("schema URL"), versionOnlySignal.fix_summary);
+
+  const versionAndSchema: ManifestState = {
+    ...EMPTY_CAPS_STATE,
+    parsed: { ucp: { capabilities: { "dev.ucp.shopping.cart": [{ version: "2026-04-08", schema: "https://ucp.dev/2026-04-08/schemas/shopping/cart.json" }] } } },
+  };
+  const fullSignal = sig_capability_cart_declared(versionAndSchema);
+  check("capability_cart_declared: version+schema -> pass (unchanged by the tightening)", fullSignal.status === "pass", fullSignal);
+
+  const schemaOnly: ManifestState = { ...EMPTY_CAPS_STATE, parsed: { ucp: { capabilities: { "dev.ucp.shopping.cart": [{ schema: "https://ucp.dev/2026-04-08/schemas/shopping/cart.json" }] } } } };
+  const schemaOnlySignal = sig_capability_cart_declared(schemaOnly);
+  check("capability_cart_declared: schema-only (no version) -> partial, fix mentions version", schemaOnlySignal.status === "partial" && !!schemaOnlySignal.fix_summary?.includes("missing a version"), schemaOnlySignal);
+
+  // weight/impact/effort themselves are UNCHANGED by this correction — only
+  // the status logic moved. Confirms this against the live signalDefinitions
+  // value, not a hardcoded literal, so it can't silently drift either.
+  check(
+    "capability_cart_declared: weight/impact/effort unchanged by the tightening",
+    versionOnlySignal.weight === fullSignal.weight && versionOnlySignal.impact === fullSignal.impact && versionOnlySignal.effort === fullSignal.effort,
+    { versionOnlySignal, fullSignal },
+  );
 }
 
 {

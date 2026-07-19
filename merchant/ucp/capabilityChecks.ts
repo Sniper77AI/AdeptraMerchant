@@ -118,23 +118,38 @@ export function sig_capability_checkout_declared(m: ManifestState, opts?: { chec
   };
 }
 
+/** Scoring-consistency correction, 2026-07-14 (v2026-04-08 spec-delta audit,
+ *  CHANGE 2): brought into line with its structurally-identical siblings
+ *  sig_capability_checkout_declared / sig_capability_fulfillment_declared —
+ *  requires version AND schema for pass (previously version alone was
+ *  enough), and checks across ALL declared entries via .find()/.some()
+ *  (previously only entries[0]). A store already declaring a complete cart
+ *  capability is unaffected; a store with a cart entry that has a version
+ *  but no schema now correctly scores partial instead of pass — the same
+ *  bar checkout/fulfillment have always held declarations to. This can move
+ *  a real store's score (unlike every other change in this file, which are
+ *  purely additive) — see D-024/README for the before/after on any store it
+ *  actually moved. weight/impact/effort are UNCHANGED; this is a status-
+ *  logic correction, not a value change. */
 export function sig_capability_cart_declared(m: ManifestState): SignalRow {
   const def = getDef("capability_cart_declared");
   const entries = capabilityEntries(m, "dev.ucp.shopping.cart");
   const declared = entries.length > 0;
-  const config = entries[0] ?? null;
-  const fullyConfigured = declared && !!config?.version;
+  const version: string | null = entries.find((e) => e?.version)?.version ?? null;
+  const schemaPresent = entries.some((e) => !!e?.schema);
 
   let status: SignalRow["status"];
   let fix: string | null = null;
   if (!declared) {
     status = "fail";
     fix = "Declare dev.ucp.shopping.cart in ucp.capabilities to support multi-item carts.";
-  } else if (fullyConfigured) {
+  } else if (version && schemaPresent) {
     status = "pass";
   } else {
     status = "partial";
-    fix = "cart capability declared without full configuration (e.g. version).";
+    fix = !schemaPresent
+      ? "cart capability declared but missing a schema URL."
+      : "cart capability declared but missing a version.";
   }
 
   return {
@@ -146,7 +161,7 @@ export function sig_capability_cart_declared(m: ManifestState): SignalRow {
     score_contribution: contribution(def.weight, status),
     impact: def.impact,
     effort: def.effort,
-    evidence_json: { declared, config },
+    evidence_json: { declared, version, schema_present: schemaPresent },
     fix_summary: fix,
   };
 }

@@ -97,11 +97,8 @@
     "effort": 3,
     "evidence_json": {
       "declared": true,
-      "config": {
-        "version": "2026-04-08",
-        "spec": "https://ucp.dev/specification/cart",
-        "schema": "https://ucp.dev/2026-04-08/schemas/shopping/cart.json"
-      }
+      "version": "2026-04-08",
+      "schema_present": true
     },
     "fix_summary": null
   },
