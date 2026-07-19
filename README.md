@@ -507,7 +507,7 @@ A merchant enters a store URL. A deterministic-first pipeline crawls a sampled s
 - **`signals` is the single source of truth.** Scores, plans, and artifacts derive from it.
 - **`analysis_runs` are immutable.** Re-running creates a new run → free score-over-time history.
 - **Multi-tenant isolation via membership + `SECURITY DEFINER` helpers** — never via JWT metadata.
-- **Deterministic-first.** LLMs are used only where they add value (2 of the 25 UCP signals).
+- **Deterministic-first.** LLMs are used only where they add value (2 of the 27 UCP signals).
 - **Honest boundaries.** External gates (Merchant Center eligibility, live payment handler, Google
   approval) are scored as readiness checks and shown as "prerequisite you must complete," never
   "done for you."
@@ -630,9 +630,44 @@ isn't wired to anything real.
 
 ## Status
 
-**All 26 UCP signals across all 6 categories in `signal-specs.md` are implemented, tested, and
+**All 27 UCP signals across all 6 categories in `signal-specs.md` are implemented, tested, and
 live-verified against two real stores (skims.com, gymshark.com). A second, independent pillar —
-`agent_readability` (10 signals) — is now also implemented, tested, and live-verified. 36 signals total.**
+`agent_readability` (10 signals) — is now also implemented, tested, and live-verified. 37 signals total.**
+
+- [x] **UCP v2026-04-08 spec-delta AUDIT: `available_instruments` advisory + cart
+      sibling-consistency fix (2026-07-14).** A follow-up dig, scoped separately from the
+      2026-07-13 patch below, mapped the rest of v2026-04-08's additions against a boundary
+      confirmed directly from the code: the checker's entire pipeline issues zero POST
+      requests anywhere, so it audits DECLARED manifest content only — runtime behaviors
+      (error responses, the agent-sent `intent` field) are structurally unauditable here and
+      belong to scaffold/transport conformance (now recorded as **D-091**). Two changes shipped,
+      kept deliberately separable:
+      **(1) `payment_instruments_declared`** — new 27th UCP signal (Category 4, weight 0.5,
+      reconciled to `llms_txt_present`'s tier), advisory-only: `pass` when any payment handler
+      declares a non-empty `available_instruments` array, `not_applicable` (never `fail`)
+      whether absent or malformed. Purely additive — proven via before/after DB diff showing
+      every pre-existing signal (including `ucp_signing_keys_present`) scored byte-identically
+      on skims.com and gymshark.com; `not_applicable` advisories with a `signal_evidence.
+      merchant_note` render via the same "Worth knowing" bucket added in the prior entry.
+      **(2) `capability_cart_declared` tightened** to require version AND schema across all
+      declared entries, matching its siblings `capability_checkout_declared` /
+      `capability_fulfillment_declared` (previously version-only, first-entry-only — an
+      inconsistency, not a deliberate choice). Unlike (1), this is a genuine scoring
+      correction, not additive: a store declaring cart with a version but no schema now
+      correctly scores `partial` instead of `pass`. New unit tests prove both directions
+      (version-only → `partial` with a fix naming the missing schema URL; version+schema →
+      still `pass`). The signal-values golden fixture was recaptured — the cart row's
+      `evidence_json` shape changed (`{declared, config}` → `{declared, version,
+      schema_present}`) but its status didn't move for the synthetic fixture, and it was the
+      *only* row that changed across all 37 signals (confirmed via `git diff`). Live-verified
+      against both real stores: a full before/after DB diff across all 37 signals × 2 stores
+      found `capability_cart_declared` stayed `pass`→`pass` on both (both already declare
+      version+schema in their real manifests — confirmed via direct SQL before writing any
+      code), and the only other diff in the entire 74-row comparison was gymshark.com's
+      `robots_txt_valid` flipping `fail`→`pass`, the same transient HTTP 503 on gymshark's live
+      infra observed during the prior entry's verification — unrelated to `capabilityChecks.ts`
+      and in the recovery direction, not a regression. No weight/impact/effort change and no
+      count change from this second item — the count moved from (1) only, 36 → 37.
 
 - [x] **UCP v2026-04-08 spec-delta patch: signing-keys signal + `embedded` transport
       (2026-07-13).** A dig prompted by "where do we stand on A2A" (see `DECISIONS.md` D-090)

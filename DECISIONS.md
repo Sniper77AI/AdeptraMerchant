@@ -259,6 +259,43 @@ is tracked as part of the transport-conformance item (ROADMAP Phase 3), a siblin
 of the known HTTP-streaming gap — and, like that gap, it never implies
 `complete_checkout` (D-010).
 
+### D-091 — The checker audits DECLARED manifest content; it structurally cannot audit RUNTIME behavior
+**Decided.** The checker audits declared capability from the manifest + sampled
+pages; it never issues transacting requests, so runtime behaviors (error
+responses, agent-sent context like `intent`, Order-shape fields) are structurally
+unauditable by the checker and belong to scaffold/transport conformance, not here.
+This is why items like first-class errors and the `intent` field are out of scope
+by design, not by omission.
+**Why.** Confirmed by code, not assumed: the entire check pipeline makes zero POST
+requests anywhere — every fetch is a GET-only probe against a manifest, feed, or
+page. A v2026-04-08 spec-delta audit (2026-07-14) mapped five new spec additions
+against this boundary: cart capability and `available_instruments` are
+DECLARED-manifest content, so they're in scope (see below); first-class
+errors/business-logic error responses and the `intent` context field are only
+observable by actually transacting, so they're out of scope by this same
+principle, joining the already-known HTTP-streaming/`complete_checkout` gaps
+(D-010, ROADMAP Phase 3) as scaffold/transport-layer concerns.
+**What the audit built (in scope, declared-manifest content):**
+(1) **`payment_instruments_declared`** (Category 4, weight 0.5 — reconciled at the
+`llms_txt_present` tier per D-024's provenance note, since this is one level more
+optional than even that): advisory-only, `pass` when any payment handler declares
+a non-empty `available_instruments` array, `not_applicable` (never `fail`) whether
+absent or malformed — deliberately one undifferentiated not_applicable branch, not
+a separate malformed-partial case. Purely additive — proven via before/after DB
+diff across all pre-existing signals on skims.com and gymshark.com.
+(2) **`capability_cart_declared` tightened** to require version AND schema across
+all declared entries, matching its siblings `capability_checkout_declared` /
+`capability_fulfillment_declared` (previously version-only, `entries[0]`-only —
+an inconsistency, not a deliberate design choice). Unlike (1), this is a genuine
+scoring correction: a store with a version-but-no-schema cart entry now correctly
+scores `partial` instead of `pass`. No weight/impact/effort change, no new signal.
+Per D-025, this applies only to new runs; no historical run is rewritten.
+**Rejected.** Building signals for the intent field or first-class error
+responses now (would require the checker to become a transacting client — a
+different, much larger scope, and arguably belongs to the scaffold/transport
+layer, not the auditor). Treating the cart tightening as "just" additive to avoid
+a harder safety story — it does move real scores, and that's disclosed, not hidden.
+
 ---
 
 ## Data Model & Multi-Tenancy
