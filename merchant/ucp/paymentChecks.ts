@@ -133,6 +133,51 @@ export function sig_merchant_of_record_declared(): SignalRow {
   };
 }
 
+/** true when x is a non-empty array of instrument-shaped objects (each with
+ *  a truthy string `type` — the field the v2026-04-08 spec-delta audit
+ *  formalized: payment_handlers[*][].available_instruments = [{type,
+ *  constraints}]). Presence + basic shape only, same discipline as
+ *  sig_signing_keys_present's JWK check — not full validation of
+ *  `constraints`. */
+function isValidInstrumentArray(x: unknown): boolean {
+  return Array.isArray(x) && x.length > 0 && x.every((item) => !!item && typeof item === "object" && !Array.isArray(item) && typeof (item as any).type === "string" && (item as any).type.length > 0);
+}
+
+/** available_instruments is a declaration-quality nicety on an already-
+ *  optional field, nested inside an already-optional capability (payment
+ *  handlers aren't required to declare it at all) — one level more optional
+ *  than sig_signing_keys_present's own field. No malformed-partial branch:
+ *  unlike a broken JWK (which an agent genuinely can't use), a handler that
+ *  simply doesn't list its instrument types isn't broken, just less
+ *  descriptive — unset and malformed both collapse to the same
+ *  not_applicable advisory, distinguished only in evidence_json. Never
+ *  fail: this is strictly a nice-to-have, never table stakes. */
+export function sig_payment_instruments_declared(m: ManifestState): SignalRow {
+  const def = getDef("payment_instruments_declared");
+  const handlers = paymentHandlerEntries(m);
+
+  const checked = handlers.map(({ key, entry }) => ({
+    handler: key,
+    available_instruments_valid: isValidInstrumentArray(entry?.available_instruments),
+  }));
+  const anyValid = checked.some((c) => c.available_instruments_valid);
+
+  const status: SignalRow["status"] = anyValid ? "pass" : "not_applicable";
+
+  return {
+    pillar: def.pillar,
+    category: def.category,
+    signal_key: def.signal_key,
+    status,
+    weight: def.weight,
+    score_contribution: contribution(def.weight, status),
+    impact: def.impact,
+    effort: def.effort,
+    evidence_json: { payment_handlers: handlers.map((h) => h.key), checked, external_gate: false },
+    fix_summary: null,
+  };
+}
+
 export function runPaymentChecks(manifest: ManifestState): SignalRow[] {
-  return [sig_ap2_compatibility_declared(manifest), sig_credential_security_posture(manifest), sig_merchant_of_record_declared()];
+  return [sig_ap2_compatibility_declared(manifest), sig_credential_security_posture(manifest), sig_merchant_of_record_declared(), sig_payment_instruments_declared(manifest)];
 }

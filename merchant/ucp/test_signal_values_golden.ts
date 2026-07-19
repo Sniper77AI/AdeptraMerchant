@@ -6,11 +6,14 @@
  * function directly (these are pure — no need to route through full
  * HTTP-mocked orchestrators just to prove a value didn't move) with minimal,
  * deterministic mock inputs, and captures the FULL emitted SignalRow for all
- * 36 signals across both pillars — not just the 5-tuple, so a refactor typo
+ * 37 signals across both pillars — not just the 5-tuple, so a refactor typo
  * that perturbed evidence_json/status/fix_summary would also be caught.
  * (35 -> 36, 2026-07-13: ucp_signing_keys_present added — v2026-04-08
  * spec-delta patch. RICH_MANIFEST has no signing_keys anywhere, so it
  * captures the not_applicable/advisory branch.)
+ * (36 -> 37, 2026-07-14: payment_instruments_declared added — v2026-04-08
+ * spec-delta audit, CHANGE 1. RICH_MANIFEST's payment handler has no
+ * available_instruments, so it also captures the not_applicable branch.)
  *
  * `capture` was run BEFORE any check-module file was touched (against the
  * nine still-scattered `W` objects). `verify` runs after the refactor and
@@ -37,7 +40,7 @@ import { sig_feed_available, sig_native_commerce_attribute, type FeedState, type
 import { sig_product_id_consistency, sig_price_consistency, sig_availability_consistency } from "./pageChecks.ts";
 import { sig_title_description_consistency, sig_discovery_attributes_enrichment, type LlmClient } from "./llmChecks.ts";
 import { sig_return_policy_present, sig_shipping_info_present, sig_support_contact_present, type PagePresenceProbe, type HomepageState as PolicyHomepageState } from "./policyChecks.ts";
-import { sig_ap2_compatibility_declared, sig_credential_security_posture, sig_merchant_of_record_declared } from "./paymentChecks.ts";
+import { sig_ap2_compatibility_declared, sig_credential_security_posture, sig_merchant_of_record_declared, sig_payment_instruments_declared } from "./paymentChecks.ts";
 import { sig_merchant_center_account_ready, sig_ucp_early_access_status, type MerchantCenterAttestation } from "./readinessChecks.ts";
 import {
   sig_robots_txt_valid,
@@ -162,6 +165,7 @@ async function buildAllSignals(): Promise<SignalRow[]> {
     sig_ap2_compatibility_declared(RICH_MANIFEST),
     sig_credential_security_posture(RICH_MANIFEST),
     sig_merchant_of_record_declared(),
+    sig_payment_instruments_declared(RICH_MANIFEST),
     // readinessChecks.ts
     sig_merchant_center_account_ready(ATTESTATION),
     sig_ucp_early_access_status(ATTESTATION),
@@ -188,7 +192,7 @@ async function main() {
   }
 
   const rows = await buildAllSignals();
-  console.log(`Built ${rows.length} signals (expect 36).`);
+  console.log(`Built ${rows.length} signals (expect 37).`);
   const serialized = JSON.stringify(rows, null, 2);
 
   if (mode === "capture") {

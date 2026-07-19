@@ -119,6 +119,15 @@ const DEFINITIONS: SignalDefinition[] = [
   { signal_key: "ap2_compatibility_declared", pillar: "ucp", category: "payment_ap2_readiness", weight: 2.5, impact: 4, effort: 4 },
   { signal_key: "credential_security_posture", pillar: "ucp", category: "payment_ap2_readiness", weight: 2.0, impact: 3, effort: 4 },
   { signal_key: "merchant_of_record_declared", pillar: "ucp", category: "payment_ap2_readiness", weight: 1.5, impact: 2, effort: 2 },
+  // Added 2026-07-14 (v2026-04-08 spec-delta audit): weight/impact/effort
+  // deliberately match llms_txt_present's tier exactly — the lightest
+  // existing signal in the whole schema — since this is a declaration-
+  // quality nicety on an already-optional field nested inside an already-
+  // optional capability, one level more optional than even llms_txt's own
+  // "discovery aid" framing. Not reconciled against this category's other
+  // siblings (2.0-2.5) — those are near-required "table stakes" checks;
+  // this one is deliberately lighter than all of them.
+  { signal_key: "payment_instruments_declared", pillar: "ucp", category: "payment_ap2_readiness", weight: 0.5, impact: 1, effort: 1 },
 
   // --- merchant_center_eligibility (readinessChecks.ts) ----------------------
   // Deliberately weight 0 — a readiness CHECKLIST, not part of capability-

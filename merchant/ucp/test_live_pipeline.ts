@@ -56,6 +56,7 @@ import {
   sig_ap2_compatibility_declared,
   sig_credential_security_posture,
   sig_merchant_of_record_declared,
+  sig_payment_instruments_declared,
 } from "./paymentChecks.ts";
 import {
   runReadinessChecks,
@@ -903,7 +904,9 @@ const NO_MANIFEST: ManifestState = {
     "com.google.pay": [{ config: { allowed_payment_methods: [{ tokenization_specification: {} }] } }],
   });
   const signals = runPaymentChecks(manifest);
-  check("runPaymentChecks: returns all three signals", signals.length === 3, signals);
+  // 4, not 3, since payment_instruments_declared (v2026-04-08 spec-delta
+  // audit, 2026-07-14) — see section 12 below for its own dedicated tests.
+  check("runPaymentChecks: returns all four signals", signals.length === 4, signals);
   check("runPaymentChecks: every signal is category payment_ap2_readiness", signals.every((s) => s.category === "payment_ap2_readiness"), signals);
 }
 
@@ -1132,6 +1135,62 @@ const VALID_JWK = { kty: "EC", crv: "P-256", x: "abc", y: "def" };
   });
   const row = sig_services_declared(m);
   check("services_declared: embedded transport treated as valid (same class as rest/mcp/a2a)", row.status === "pass", row);
+}
+
+// ---------------------------------------------------------------------------
+// 12. paymentChecks (Category 4) — payment_instruments_declared
+//     (v2026-04-08 spec-delta audit, 2026-07-14)
+// ---------------------------------------------------------------------------
+
+const VALID_INSTRUMENT = { type: "card", constraints: { networks: ["visa", "mastercard"] } };
+
+{
+  // PASS: at least one handler declares a non-empty array of {type, ...} entries.
+  const m = mkManifest({
+    ucp: { payment_handlers: { "com.google.pay": [{ config: {}, available_instruments: [VALID_INSTRUMENT] }] } },
+  });
+  const row = sig_payment_instruments_declared(m);
+  check("payment_instruments: valid instrument array -> pass", row.status === "pass", row);
+  check("payment_instruments: pass never sets a fix_summary (advisory design, not a fail-able check)", row.fix_summary === null, row);
+}
+
+{
+  // NOT_APPLICABLE: no handler lists it at all. Advisory, never fail.
+  const m = mkManifest({ ucp: { payment_handlers: { "com.google.pay": [{ config: {} }] } } });
+  const row = sig_payment_instruments_declared(m);
+  check("payment_instruments: absent on the only handler -> not_applicable (never fail)", row.status === "not_applicable", row);
+  check("payment_instruments: not_applicable earns zero score_contribution", row.score_contribution === 0, row);
+}
+
+{
+  // NOT_APPLICABLE: no payment handlers declared at all.
+  const m = mkManifest({ ucp: {} });
+  const row = sig_payment_instruments_declared(m);
+  check("payment_instruments: no payment handlers at all -> not_applicable", row.status === "not_applicable", row);
+}
+
+{
+  // NOT_APPLICABLE: present but malformed (a string, not an array) — collapses
+  // to the same advisory as absent, per design (not broken, just undescriptive).
+  const m = mkManifest({ ucp: { payment_handlers: { "com.google.pay": [{ config: {}, available_instruments: "card" }] } } });
+  const row = sig_payment_instruments_declared(m);
+  check("payment_instruments: malformed (non-array) -> not_applicable, not partial", row.status === "not_applicable", row);
+}
+
+{
+  // PASS: a SECOND handler with valid instruments still passes even if the
+  // first handler has none — "any" handler is enough, matching the pattern
+  // ap2_compatibility_declared/credential_security_posture use.
+  const m = mkManifest({
+    ucp: {
+      payment_handlers: {
+        "com.google.pay": [{ config: {} }],
+        "com.example.wallet": [{ config: {}, available_instruments: [VALID_INSTRUMENT] }],
+      },
+    },
+  });
+  const row = sig_payment_instruments_declared(m);
+  check("payment_instruments: any one handler with valid instruments -> pass", row.status === "pass", row);
 }
 
 console.log(failures === 0 ? "\nAll pipeline tests passed." : `\n${failures} FAILURE(S)`);

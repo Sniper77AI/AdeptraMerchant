@@ -352,6 +352,29 @@
   },
   {
     "pillar": "ucp",
+    "category": "payment_ap2_readiness",
+    "signal_key": "payment_instruments_declared",
+    "status": "not_applicable",
+    "weight": 0.5,
+    "score_contribution": 0,
+    "impact": 1,
+    "effort": 1,
+    "evidence_json": {
+      "payment_handlers": [
+        "com.google.pay"
+      ],
+      "checked": [
+        {
+          "handler": "com.google.pay",
+          "available_instruments_valid": false
+        }
+      ],
+      "external_gate": false
+    },
+    "fix_summary": null
+  },
+  {
+    "pillar": "ucp",
     "category": "product_data_hygiene",
     "signal_key": "price_consistency_cross_surface",
     "status": "not_applicable",
